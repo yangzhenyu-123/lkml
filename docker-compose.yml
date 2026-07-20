@@ -63,12 +63,12 @@ services:
       - CELERY_RESULT_BACKEND=redis://redis:6379/1
       - DATABASE_URL=postgresql://${POSTGRES_USER:-lkml}:${POSTGRES_PASSWORD:-lkml_secret}@postgres:5432/${POSTGRES_DB:-lkml_patent}
       - KERNEL_MIRROR_PATH=/data/kernel-mirror
-      - LKML_MBOX_PATH=/data/lkml-mbox
+      - LKML_MIRROR_PATH=/data/lkml-mirror
       - OUTPUTS_PATH=/data/outputs
       - OPENCODE_CONFIG_PATH=/data/opencode-config
     volumes:
       - ./volumes/kernel-mirror:/data/kernel-mirror:ro
-      - ./volumes/lkml-mbox:/data/lkml-mbox
+      - ./volumes/lkml-mirror:/data/lkml-mirror
       - ./volumes/outputs:/data/outputs
       - ./volumes/opencode-config:/data/opencode-config
       - ./backend:/app
@@ -96,12 +96,12 @@ services:
       - CELERY_RESULT_BACKEND=redis://redis:6379/1
       - DATABASE_URL=postgresql://${POSTGRES_USER:-lkml}:${POSTGRES_PASSWORD:-lkml_secret}@postgres:5432/${POSTGRES_DB:-lkml_patent}
       - KERNEL_MIRROR_PATH=/data/kernel-mirror
-      - LKML_MBOX_PATH=/data/lkml-mbox
+      - LKML_MIRROR_PATH=/data/lkml-mirror
       - OUTPUTS_PATH=/data/outputs
       - OPENCODE_CONFIG_PATH=/data/opencode-config
     volumes:
       - ./volumes/kernel-mirror:/data/kernel-mirror
-      - ./volumes/lkml-mbox:/data/lkml-mbox
+      - ./volumes/lkml-mirror:/data/lkml-mirror
       - ./volumes/outputs:/data/outputs
       - ./volumes/opencode-config:/data/opencode-config
       - ./backend:/app
@@ -125,12 +125,12 @@ services:
       - CELERY_RESULT_BACKEND=redis://redis:6379/1
       - DATABASE_URL=postgresql://${POSTGRES_USER:-lkml}:${POSTGRES_PASSWORD:-lkml_secret}@postgres:5432/${POSTGRES_DB:-lkml_patent}
       - KERNEL_MIRROR_PATH=/data/kernel-mirror
-      - LKML_MBOX_PATH=/data/lkml-mbox
+      - LKML_MIRROR_PATH=/data/lkml-mirror
       - OUTPUTS_PATH=/data/outputs
       - OPENCODE_CONFIG_PATH=/data/opencode-config
     volumes:
       - ./volumes/kernel-mirror:/data/kernel-mirror
-      - ./volumes/lkml-mbox:/data/lkml-mbox
+      - ./volumes/lkml-mirror:/data/lkml-mirror
       - ./volumes/outputs:/data/outputs
       - ./volumes/opencode-config:/data/opencode-config
       - ./backend:/app

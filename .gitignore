@@ -26,6 +26,8 @@ dist-ssr/
 # 卷数据
 volumes/kernel-mirror/*
 !volumes/kernel-mirror/.gitkeep
+volumes/lkml-mirror/*
+!volumes/lkml-mirror/.gitkeep
 volumes/lkml-mbox/*
 !volumes/lkml-mbox/.gitkeep
 volumes/outputs/*

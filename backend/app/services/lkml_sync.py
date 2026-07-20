@@ -1,17 +1,38 @@
-"""LKML 邮件同步服务：下载 lore.kernel.org mbox、解析、入库、计算 patch-id、识别子系统。"""
+"""LKML 邮件同步服务：从 lore.kernel.org git 分片镜像读取邮件、解析、入库。
+
+背景：
+  lore.kernel.org 已启用 Anubis 反爬保护，旧的 HTTP mbox 接口（*.mbox）全部失效。
+  官方推荐通过 git 分片镜像读取归档：
+    https://lore.kernel.org/lkml/{0..N}
+  每个分片是一个 ~1GB 的 bare git 仓库，每个 commit = 一封邮件。
+  - commit 的 author/committer date = 邮件日期（public-inbox 设定）
+  - commit 添加的 blob 文件内容 = 原始 RFC822 邮件（headers + body）
+  - 分片 0 = 最旧（~1998），分片 N = 最新（当月）
+
+  本模块负责：
+  1. 探测最大分片编号（probe_max_shard）
+  2. 克隆/fetch 最新分片到本地（fetch_shard / fetch_latest_shard）
+  3. 用 git log 按日期范围提取 commit，批量读取 blob 解析为 email.message.Message
+  4. 入库（按 message_id 去重）
+  5. 计算 patch-id、识别子系统、统计回复数
+
+  注意：批量历史月份的邮件可能在较旧分片中，需先运行
+        scripts/download-lkml-mbox.sh 下载所需分片。
+"""
 from __future__ import annotations
 
 import asyncio
+import email as email_lib
 import hashlib
-import mailbox
 import re
+import shutil
+import subprocess
 from datetime import datetime, timezone
 from email.message import Message
 from email.utils import getaddresses, parsedate_to_datetime
 from pathlib import Path
-from typing import AsyncIterator, Iterator, Optional
+from typing import Iterator, Optional
 
-import aiohttp
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -130,7 +151,8 @@ def _extract_body(msg: Message) -> str:
 
 
 def parse_mbox(mbox_path: Path) -> Iterator[Message]:
-    """用 mailbox.mbox 迭代解析邮件。"""
+    """用 mailbox.mbox 迭代解析旧的 mbox 文件（保留以兼容本地历史归档）。"""
+    import mailbox
     mbox = mailbox.mbox(str(mbox_path))
     try:
         for msg in mbox:
@@ -139,70 +161,282 @@ def parse_mbox(mbox_path: Path) -> Iterator[Message]:
         mbox.close()
 
 
-async def download_mbox(
-    year: int,
-    month: int,
-    *,
-    session: Optional[aiohttp.ClientSession] = None,
-    force_refresh: bool = False,
-) -> Path:
-    """下载 https://lore.kernel.org/linux-kernel/{YYYY}-{MM}.mbox 到 LKML_MBOX_PATH。
+# ============ git 分片镜像操作 ============
 
-    返回本地文件路径。
+def _shard_url(shard_num: int) -> str:
+    return f"{settings.LKML_GIT_BASE.rstrip('/')}/{shard_num}"
 
-    刷新策略：
-    - 历史月份（已过去的月份）：如已存在且非空，直接复用，不重复下载
-      （历史归档不再变化，无需刷新）
-    - 当月：默认每次调用都重新下载（当月归档会持续追加新邮件）
-      可通过 force_refresh=False 跳过当月刷新
-    - force_refresh=True：强制重新下载（用于手动触发覆盖已有文件）
 
-    下载采用「先写 .part 再原子 rename」策略，避免下载失败时污染已有文件。
-    """
-    fname = f"{year:04d}-{month:02d}.mbox"
-    target = settings.lkml_mbox_dir / fname
+def _shard_path(shard_num: int) -> Path:
+    return settings.lkml_mirror_dir / f"lkml-{shard_num}.git"
 
-    # 判断是否为当月
-    now = datetime.utcnow()
-    is_current_month = (year == now.year and month == now.month)
 
-    # 历史月份且已存在：直接复用
-    if not force_refresh and not is_current_month and target.exists() and target.stat().st_size > 0:
-        return target
-
-    # 当月且已存在且未强制刷新：根据 mtime 判断是否需要刷新（间隔 > 1 小时才刷新）
-    if (
-        not force_refresh
-        and is_current_month
-        and target.exists()
-        and target.stat().st_size > 0
-    ):
-        mtime = target.stat().st_mtime
-        age_seconds = now.timestamp() - mtime
-        if age_seconds < 3600:  # 1 小时内已刷新过，跳过
-            return target
-
-    url = f"{settings.LKML_BASE_URL.rstrip('/')}/{fname}"
-    own_session = session is None
-    if own_session:
-        session = aiohttp.ClientSession()
+async def _run_git(
+    *args: str,
+    cwd: Optional[Path] = None,
+    timeout: int = 600,
+) -> tuple[int, bytes, bytes]:
+    """异步执行 git 命令。返回 (returncode, stdout, stderr)。"""
+    proc = await asyncio.create_subprocess_exec(
+        "git", *args,
+        cwd=cwd,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
     try:
-        async with session.get(url, timeout=aiohttp.ClientTimeout(total=600)) as resp:  # type: ignore[union-attr]
-            if resp.status != 200:
-                raise RuntimeError(f"Failed to download {url}: HTTP {resp.status}")
-            data = await resp.read()
-        # 先写 .part 文件，成功后原子 rename，避免下载失败污染已有文件
-        part = target.with_suffix(target.suffix + ".part")
-        part.write_bytes(data)
-        part.replace(target)
-        return target
-    finally:
-        if own_session and session is not None:
-            await session.close()
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+        return proc.returncode or 0, stdout, stderr
+    except asyncio.TimeoutError:
+        proc.kill()
+        await proc.wait()
+        raise
 
 
-async def _store_emails(messages: list[Message], raw_mbox_path: Path) -> int:
-    """批量入库邮件（按 message_id 去重）。返回新增数量。"""
+async def shard_exists(shard_num: int) -> bool:
+    """检测指定分片是否存在（用 git ls-remote 探测 HEAD）。"""
+    try:
+        rc, out, _ = await _run_git(
+            "ls-remote", _shard_url(shard_num), "HEAD",
+            timeout=settings.LKML_PROBE_TIMEOUT,
+        )
+        return rc == 0 and b"HEAD" in out
+    except Exception:  # noqa: BLE001
+        return False
+
+
+async def probe_max_shard() -> int:
+    """探测最大分片编号（分片 0=最旧，N=最新）。返回 N。
+
+    采用「指数扩张 + 二分查找」组合策略，最多约 2*log2(N) 次网络请求。
+    """
+    # 1. 指数扩张找上界
+    lo, hi = 0, 1
+    if not await shard_exists(0):
+        return -1  # 网络不通或源站异常
+    while hi <= 1024:
+        if await shard_exists(hi):
+            lo = hi
+            hi *= 2
+        else:
+            break
+    # 2. 二分查找最大存在编号
+    while lo < hi:
+        mid = (lo + hi + 1) // 2
+        if await shard_exists(mid):
+            lo = mid
+        else:
+            hi = mid - 1
+    return lo
+
+
+async def fetch_shard(shard_num: int, *, shallow: bool = False) -> Path:
+    """克隆或增量 fetch 指定分片。返回本地 bare 仓库路径。
+
+    - 不存在时：git clone --bare（shallow=True 用 --depth 1）
+    - 已存在时：git fetch --all --prune
+    """
+    repo_path = _shard_path(shard_num)
+    url = _shard_url(shard_num)
+    settings.lkml_mirror_dir.mkdir(parents=True, exist_ok=True)
+
+    if not repo_path.exists():
+        args = ["clone", "--bare"]
+        if shallow:
+            args += ["--depth", "1"]
+        args += [url, str(repo_path)]
+        rc, _, err = await _run_git(*args, cwd=settings.lkml_mirror_dir, timeout=3600)
+        if rc != 0:
+            if repo_path.exists():
+                shutil.rmtree(repo_path, ignore_errors=True)
+            raise RuntimeError(
+                f"git clone shard {shard_num} failed: {err.decode(errors='replace').strip()}"
+            )
+    else:
+        rc, _, err = await _run_git(
+            "--git-dir", str(repo_path), "fetch", "--all", "--prune",
+            timeout=3600,
+        )
+        if rc != 0:
+            raise RuntimeError(
+                f"git fetch shard {shard_num} failed: {err.decode(errors='replace').strip()}"
+            )
+    return repo_path
+
+
+async def fetch_latest_shard() -> tuple[int, Path]:
+    """探测并 fetch 最新分片。返回 (分片编号, 路径)。"""
+    max_shard = await probe_max_shard()
+    if max_shard < 0:
+        raise RuntimeError(
+            "无法探测 lore.kernel.org 分片（网络不通或源站异常）。"
+            "请检查网络或先运行 scripts/download-lkml-mbox.sh 手动下载。"
+        )
+    path = await fetch_shard(max_shard)
+    return max_shard, path
+
+
+# ============ 从 git 镜像解析邮件 ============
+
+def _git_log_added_files(
+    repo_path: Path,
+    since_date: Optional[datetime],
+    until_date: Optional[datetime],
+) -> list[tuple[str, str]]:
+    """用 git log 提取日期范围内每个 commit 变更的文件列表。
+
+    返回 [(commit_sha, filepath), ...]。
+
+    背景：lore.kernel.org 的 LKML 归档使用 public-inbox v2 格式，
+    所有邮件存储在仓库根目录的单个文件 `m` 中。每个 commit 修改 `m`
+    的内容为当次入库的邮件（commit 的 author/committer date = 邮件日期）。
+    因此我们收集 A（新增，浅克隆边界 commit）和 M（修改，常规 commit）
+    两种状态，统一用 `git show <sha>:<file>` 读取邮件内容。
+
+    一个 commit 理论上可能修改多个文件，全部收集（实际 v2 只有 `m`）。
+    """
+    args: list[str] = [
+        "git", "--git-dir", str(repo_path),
+        "log", "--reverse",
+        "--format=@@@COMMIT %H",
+        "--name-status",  # 不加 --diff-filter，同时收集 A 和 M
+    ]
+    if since_date:
+        args.append(f"--since={since_date.strftime('%Y-%m-%d %H:%M:%S')}")
+    if until_date:
+        args.append(f"--until={until_date.strftime('%Y-%m-%d %H:%M:%S')}")
+
+    result = subprocess.run(args, capture_output=True, check=False)
+    if result.returncode != 0:
+        return []
+    output = result.stdout.decode("utf-8", errors="replace")
+
+    entries: list[tuple[str, str]] = []
+    current_sha: Optional[str] = None
+    for line in output.splitlines():
+        if line.startswith("@@@COMMIT "):
+            current_sha = line[len("@@@COMMIT "):].strip()
+        elif current_sha and (line.startswith("A\t") or line.startswith("M\t")):
+            filepath = line[2:].strip()
+            if filepath:
+                entries.append((current_sha, filepath))
+    return entries
+
+
+def _batch_read_blobs(
+    repo_path: Path,
+    entries: list[tuple[str, str]],
+) -> list[bytes]:
+    """批量读取 git blob 内容。entries: [(sha, filepath), ...]。
+
+    使用 git cat-file --batch 一次性读取所有 blob，避免逐个 git show 的进程开销。
+    返回与 entries 同序的 bytes 列表（读取失败的项为 b""）。
+    """
+    if not entries:
+        return []
+    input_data = "".join(f"{sha}:{fp}\n" for sha, fp in entries).encode("utf-8")
+
+    proc = subprocess.run(
+        ["git", "--git-dir", str(repo_path), "cat-file", "--batch"],
+        input=input_data, capture_output=True, check=False,
+    )
+    if proc.returncode != 0:
+        # 退化为逐个读取
+        return [_read_blob_one(repo_path, sha, fp) for sha, fp in entries]
+
+    stdout = proc.stdout
+    results: list[bytes] = []
+    pos = 0
+    n = len(stdout)
+    while pos < n:
+        nl = stdout.find(b"\n", pos)
+        if nl == -1:
+            break
+        header = stdout[pos:nl]
+        parts = header.split(b" ", 2)
+        # 期望格式: "<oid> blob <size>"，失败时为 "<ref> missing"
+        if len(parts) >= 3 and parts[1] == b"blob":
+            try:
+                size = int(parts[2])
+            except ValueError:
+                pos = nl + 1
+                continue
+            content_start = nl + 1
+            content_end = content_start + size
+            results.append(stdout[content_start:content_end])
+            pos = content_end + 1  # 跳过内容后的换行
+        else:
+            # missing 或其他错误，占位
+            results.append(b"")
+            pos = nl + 1
+    # 对齐长度
+    while len(results) < len(entries):
+        results.append(b"")
+    return results[:len(entries)]
+
+
+def _read_blob_one(repo_path: Path, sha: str, filepath: str) -> bytes:
+    """单个 blob 读取（批量失败时的降级路径）。"""
+    result = subprocess.run(
+        ["git", "--git-dir", str(repo_path), "show", f"{sha}:{filepath}"],
+        capture_output=True, check=False,
+    )
+    return result.stdout if result.returncode == 0 else b""
+
+
+def parse_git_commits(
+    repo_path: Path,
+    since_date: Optional[datetime] = None,
+    until_date: Optional[datetime] = None,
+) -> Iterator[Message]:
+    """从 git 镜像按日期范围提取邮件。
+
+    lore.kernel.org 的 git 分片镜像中，每个 commit 添加一个 blob 文件，
+    blob 内容为原始 RFC822 邮件（headers + body）。
+
+    - since_date / until_date：按 commit 时间过滤（public-inbox 将 committer
+      date 设为邮件 Date）。为防止边界误差，对解析后的邮件 Date header 再做
+      一次 Python 侧过滤。
+    - 返回 email.message.Message 迭代器
+    """
+    entries = _git_log_added_files(repo_path, since_date, until_date)
+    if not entries:
+        return
+
+    blobs = _batch_read_blobs(repo_path, entries)
+    for raw in blobs:
+        if not raw:
+            continue
+        try:
+            msg = email_lib.message_from_bytes(raw)
+        except Exception:  # noqa: BLE001
+            continue
+        # Python 侧按邮件 Date header 再过滤一次（防止 git 时间漂移）
+        if since_date or until_date:
+            date_raw = _get_header(msg, "Date")
+            if date_raw:
+                try:
+                    msg_date = parsedate_to_datetime(date_raw)
+                    if msg_date.tzinfo is not None:
+                        msg_date_utc = msg_date.astimezone(timezone.utc)
+                    else:
+                        msg_date_utc = msg_date.replace(tzinfo=timezone.utc)
+                    if since_date and msg_date_utc < since_date:
+                        continue
+                    if until_date and msg_date_utc >= until_date:
+                        continue
+                except (TypeError, ValueError):
+                    pass  # 无法解析日期，保留邮件
+        yield msg
+
+
+# ============ 入库 ============
+
+async def _store_emails(messages: list[Message], source: str) -> int:
+    """批量入库邮件（按 message_id 去重）。返回新增数量。
+
+    source：记录到 raw_mbox_path 字段，这里改为 git 镜像分片标识
+    （例如 "lkml-19.git"），便于追溯邮件来源。
+    """
     inserted = 0
     async with async_session_factory() as db:
         for msg in messages:
@@ -240,7 +474,7 @@ async def _store_emails(messages: list[Message], raw_mbox_path: Path) -> int:
                 refs=refs,
                 is_patch=is_patch,
                 subsystem=subsystem,
-                raw_mbox_path=str(raw_mbox_path),
+                raw_mbox_path=source,
                 reply_count=0,
             )
             db.add(email_obj)
@@ -249,28 +483,93 @@ async def _store_emails(messages: list[Message], raw_mbox_path: Path) -> int:
     return inserted
 
 
-async def sync_year_month(year: int, month: int, *, force_refresh: bool = False) -> dict:
-    """下载 + 解析 + 入库。返回 {path, inserted, total, refreshed}。
+# ============ 同步入口 ============
 
-    - force_refresh=True：强制重新下载 mbox 文件（覆盖已有）
-    - 默认：历史月份复用本地文件；当月文件根据 mtime 间隔判断是否刷新
+def _month_range_utc(year: int, month: int) -> tuple[datetime, datetime]:
+    """返回某月的 [起始, 下月起始) UTC 时间范围。"""
+    start = datetime(year, month, 1, tzinfo=timezone.utc)
+    if month == 12:
+        end = datetime(year + 1, 1, 1, tzinfo=timezone.utc)
+    else:
+        end = datetime(year, month + 1, 1, tzinfo=timezone.utc)
+    return start, end
+
+
+def _list_local_shards() -> list[Path]:
+    """列出本地所有 git 分片镜像（按编号升序）。"""
+    mirror_dir = settings.lkml_mirror_dir
+    if not mirror_dir.exists():
+        return []
+    return sorted(
+        mirror_dir.glob("lkml-*.git"),
+        key=lambda p: int(p.stem.split("-")[1]),
+    )
+
+
+async def sync_year_month(year: int, month: int, *, force_refresh: bool = False) -> dict:
+    """从 git 分片镜像同步指定月份的邮件到数据库。
+
+    返回 {path, shards, inserted, total, force_refreshed}。
+
+    - force_refresh=True：先 git fetch 最新分片再解析（用于刷新脏数据）
+    - force_refresh=False：直接用本地已有镜像解析（不联网）
+    - 当月：默认强制 fetch 最新分片（归档会持续追加新邮件）
+
+    注意：历史月份的邮件可能在较旧分片中。若本地只克隆了最新分片，
+    历史月份同步会返回 total=0。建议先运行
+    scripts/download-lkml-mbox.sh --latest N 下载足够多的分片。
     """
-    path = await download_mbox(year, month, force_refresh=force_refresh)
-    # parse_mbox 是同步迭代器，放到默认 executor 中执行以避免阻塞事件循环
-    messages = await asyncio.to_thread(list, list(parse_mbox(path)))
-    inserted = await _store_emails(messages, path)
+    start, end = _month_range_utc(year, month)
+    now = datetime.utcnow()
+    is_current_month = (year == now.year and month == now.month)
+
+    fetched_shard: Optional[int] = None
+    # 当月：必须 fetch 最新分片（新邮件持续追加）
+    # 历史月份且 force_refresh：也 fetch 最新分片（用于更新本地镜像）
+    if is_current_month or force_refresh:
+        try:
+            fetched_shard, _ = await fetch_latest_shard()
+        except Exception as exc:  # noqa: BLE001
+            # 网络失败时若本地已有镜像则继续，否则报错
+            if not _list_local_shards():
+                raise RuntimeError(
+                    f"fetch 最新分片失败且本地无镜像：{exc}。"
+                    f"请先运行 scripts/download-lkml-mbox.sh 下载分片。"
+                )
+
+    shard_paths = _list_local_shards()
+    if not shard_paths:
+        raise RuntimeError(
+            f"未找到任何 git 分片镜像（{settings.lkml_mirror_dir}）。"
+            f"请先运行 scripts/download-lkml-mbox.sh 下载分片。"
+        )
+
+    # 扫描所有本地分片，按日期范围提取邮件
+    # git log 的 --since/--until 会自动剔除无关邮件，多分片扫描开销可控
+    all_messages: list[Message] = []
+    used_shards: list[str] = []
+    for sp in shard_paths:
+        msgs = await asyncio.to_thread(list, parse_git_commits(sp, start, end))
+        if msgs:
+            all_messages.extend(msgs)
+            used_shards.append(sp.name)
+
+    source = used_shards[0] if used_shards else shard_paths[-1].name
+    inserted = await _store_emails(all_messages, source)
     return {
-        "path": str(path),
+        "path": str(settings.lkml_mirror_dir),
+        "shards": used_shards,
+        "fetched_shard": fetched_shard,
         "inserted": inserted,
-        "total": len(messages),
-        "force_refreshed": force_refresh,
+        "total": len(all_messages),
+        "force_refreshed": is_current_month or force_refresh,
     }
 
 
 async def sync_current_month(*, force_refresh: bool = True) -> dict:
-    """同步当前月份（默认强制刷新，用于每日定时任务）。
+    """同步当前月份（默认强制刷新，用于每 6 小时定时任务）。
 
-    当月 mbox 归档会持续追加新邮件，因此每日定时任务应强制刷新。
+    当月归档会持续追加新邮件，因此定时任务应强制刷新（git fetch 最新分片）。
     _store_emails 内部按 message_id 去重，重复邮件不会重复入库。
     """
     now = datetime.utcnow()

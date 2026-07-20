@@ -13,9 +13,9 @@
 ## ✨ 功能特性
 
 ### 🔄 LKML 全量同步
-- 拉取 [lore.kernel.org](https://lore.kernel.org/linux-kernel/) 月度 mbox 归档（2000 年至今）
+- 通过 [lore.kernel.org](https://lore.kernel.org/lkml/) git 分片镜像拉取邮件归档（1998 年至今）
 - 邮件解析入 PostgreSQL，提取 message_id / subject / author / patch_id / 子系统
-- Celery Beat 每日 03:00 增量同步当月 + 上月
+- Celery Beat 每 6 小时增量 fetch 当月分片（按 message_id 去重）
 
 ### 🏗️ 历史分析 4 阶段流水线（核心）
 
@@ -81,7 +81,7 @@
                               ▲
 ┌──────────────────────────────────────────────────────────────┐
 │  PostgreSQL (元数据) · Redis (broker+进度) · 本地卷             │
-│  kernel-mirror · lkml-mbox · outputs · opencode-config        │
+│  kernel-mirror · lkml-mirror · outputs · opencode-config      │
 └──────────────────────────────────────────────────────────────┘
 ```
 
@@ -94,7 +94,7 @@
 | 前端 | React 18 · Vite 6 · TypeScript 5 · Ant Design 5 · Tailwind CSS · Zustand · React Router 7 · React Markdown |
 | 后端 | FastAPI 0.115 · Python 3.11 · SQLAlchemy 2.0 (async) · Alembic · Pydantic v2 · python-jose (JWT) · bcrypt · aiohttp |
 | 异步任务 | Celery 5.4 · Redis 7 (broker + result backend) · Celery Beat (定时调度) |
-| 数据存储 | PostgreSQL 16 · Redis 7 · 本地卷（kernel git 镜像 / lkml mbox / 产出物 / opencode 配置） |
+| 数据存储 | PostgreSQL 16 · Redis 7 · 本地卷（kernel git 镜像 / lkml git 分片镜像 / 产出物 / opencode 配置） |
 | 部署 | Docker Compose · Nginx（前端静态服务 + API 反代 + WebSocket 升级） |
 | 外部依赖 | [lore.kernel.org](https://lore.kernel.org/linux-kernel/) · [git.kernel.org](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git) · [OpenCode CLI](https://github.com/sst/opencode) · [patent-disclosure-skill](https://github.com/handsomestWei/patent-disclosure-skill) |
 
@@ -155,109 +155,121 @@ git clone --mirror https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linu
 > `CLONE_SHALLOW=1`（在 `.env` 或 `docker-compose.yml` 的 kernel-mirror 服务中设置）
 > 注意：浅克隆会丢失历史提交，无法用于历史 patch 追溯，仅适合"只需最新代码"场景。
 
-#### 3.2 预下载 LKML mbox 归档（强烈推荐，历史分析必备）
+#### 3.2 预下载 LKML 邮件归档（强烈推荐，历史分析必备）
 
-LKML 邮件按月归档为 mbox 文件，托管在 `https://lore.kernel.org/linux-kernel/`，
-URL 格式：`https://lore.kernel.org/linux-kernel/{YYYY}-{MM}.mbox`（单月约 200-500MB）。
-容器启动后 backend 会按需下载，但批量历史分析建议提前下载目标年份。
+LKML 邮件归档托管在 `https://lore.kernel.org/lkml/`。自 2025 年起，lore.kernel.org
+启用 Anubis 反爬保护，旧的 HTTP mbox 接口（`*.mbox`）已全部失效。官方推荐的归档
+方式是 **git 分片镜像**：归档按时间分片为多个 ~1GB 的 bare git 仓库，每个 commit
+= 一封邮件（commit 添加的 blob 文件内容 = 原始 RFC822 邮件）。
 
-**方式 A：使用项目提供的批量下载脚本（推荐）**
+- 仓库 URL：`https://lore.kernel.org/lkml/{0..N}`
+- 分片 0 = 最旧（~1998），分片 N = 最新（当月）
+- git 协议不受 Anubis 影响，可正常 clone/fetch
+
+**使用项目提供的批量下载脚本（推荐）**
 
 ```bash
-# 下载 2023 全年
-./scripts/download-lkml-mbox.sh 2023
+# 仅探测当前有多少个分片（不下载）
+./scripts/download-lkml-mbox.sh --probe
 
-# 下载 2020-2024 共 5 年（约 15-25GB）
-./scripts/download-lkml-mbox.sh 2020 2021 2022 2023 2024
+# 浅克隆最新 1 个分片（当月邮件，~150MB，最快验证）
+./scripts/download-lkml-mbox.sh --latest 1 --depth 1
 
-# 仅当年（默认行为）
-./scripts/download-lkml-mbox.sh
+# 克隆最新 3 个分片（近 1-2 年邮件，~3GB）
+./scripts/download-lkml-mbox.sh --latest 3
 
-# 自定义并发数与目录
-./scripts/download-lkml-mbox.sh 2023 --jobs 8 --dir /data/lkml-mbox
+# 完整克隆全部分片（1998 至今，~13GB+）
+./scripts/download-lkml-mbox.sh --all
+
+# 克隆指定分片
+./scripts/download-lkml-mbox.sh --shards 18 19
+
+# 浅克隆指定日期之后的邮件（跨分片，节省空间）
+./scripts/download-lkml-mbox.sh --since 2024-01-01
+
+# 已有镜像时执行增量 fetch（不重新 clone）
+./scripts/download-lkml-mbox.sh --latest 1 --fetch
 
 # 查看完整帮助
 ./scripts/download-lkml-mbox.sh --help
 ```
 
 脚本特性：
-- 断点续传（wget -c / curl -C -），网络中断后重跑即可继续
-- 自动跳过未来月份（不存在的月份会 404，脚本捕获并跳过）
-- 当月文件默认删除重下（增量刷新），可用 `--skip-current` 跳过
-- 并行下载（默认 4 并发，`--jobs N` 调整）
-- 下载到 `./volumes/lkml-mbox/`（与 docker-compose 挂载路径一致）
-- 自动识别 HTML 错误页与空文件，避免污染数据
+- 基于 git 协议，绕过 Anubis 反爬保护
+- 自动二分查找探测最大分片编号
+- 支持 `--depth N` 浅克隆（节省空间与时间）
+- 支持 `--shallow-since YYYY-MM-DD` 跨分片浅克隆指定日期后的邮件
+- 已有镜像时 `--fetch` 执行增量更新
+- 下载到 `./volumes/lkml-mirror/`（与 docker-compose 挂载路径一致）
+- 每个分片克隆为 `lkml-{N}.git` bare 仓库
 
-**方式 B：手动 wget/curl 批量下载**
+**手动 git clone（替代方案）**
 
 ```bash
-mkdir -p volumes/lkml-mbox && cd volumes/lkml-mbox
+mkdir -p volumes/lkml-mirror && cd volumes/lkml-mirror
 
-# 下载 2023 全年
-for m in 01 02 03 04 05 06 07 08 09 10 11 12; do
-  wget -c "https://lore.kernel.org/linux-kernel/2023-${m}.mbox"
-done
+# 克隆最新分片（浅克隆，仅最新提交）
+git clone --bare --depth 1 https://lore.kernel.org/lkml/19 lkml-19.git
 
-# 下载 2020-2024 共 5 年
-for y in 2020 2021 2022 2023 2024; do
-  for m in 01 02 03 04 05 06 07 08 09 10 11 12; do
-    wget -c "https://lore.kernel.org/linux-kernel/${y}-${m}.mbox"
-  done
-done
+# 增量更新（fetch 新邮件）
+cd lkml-19.git && git fetch --all --prune
 ```
 
 **文件大小参考**
 
-| 时间范围 | mbox 大小 | 邮件数（估） |
-|----------|-----------|-------------|
-| 单月 | 200-500 MB | 1-3 万封 |
-| 全年 | ~3-5 GB | 10-30 万封 |
-| 5 年（2020-2024） | ~15-25 GB | 50-150 万封 |
+| 范围 | 命令 | 大小 | 说明 |
+|------|------|------|------|
+| 当月邮件 | `--latest 1 --depth 1` | ~150MB | 最快验证，仅最新提交 |
+| 最近 1-2 年 | `--latest 3` | ~3GB | 推荐用于日常分析 |
+| 全部历史 | `--all` | ~13GB+ | 1998 至今全部 LKML |
 
-**自动增量刷新机制（无需手动删除）**
+**自动增量刷新机制（无需手动干预）**
 
-容器启动后，Celery beat 会自动维护 mbox 文件，无需人工干预：
+容器启动后，Celery beat 会自动维护邮件归档，无需人工干预：
 
 | 场景 | 行为 |
 |------|------|
-| 历史月份（已过去） | 本地已存在即复用，不重复下载（归档不再变化） |
-| 当月 | 每 6 小时自动强制刷新（00:00/06:00/12:00/18:00 UTC） |
-| 当月（API 手动触发） | 默认强制刷新，重复邮件按 message_id 去重 |
-| 任意月份 force_refresh=True | 强制重新下载覆盖（用于修复脏数据） |
+| 当月 | 每 6 小时自动 `git fetch` 最新分片（00:00/06:00/12:00/18:00 UTC） |
+| 当月（API 手动触发） | 默认强制 fetch 最新分片，按 message_id 去重 |
+| 历史月份 | 直接从本地镜像读取（不联网），归档不再变化 |
+| 任意月份 force_refresh=True | 强制 fetch 最新分片（用于更新本地镜像） |
 
-下载策略优化：
-- 「先写 `.part` 再原子 rename」，下载失败不会污染已有文件
-- 当月文件 1 小时内已刷新过则跳过（避免频繁请求）
-- `_store_emails` 按 `message_id` 去重，重复刷新不会产生重复记录
+去重策略：
+- `_store_emails` 按 `message_id` 去重，重复 fetch 不会产生重复记录
+- 历史月份无需 fetch（归档不可变），直接从本地镜像读取
 
 **手动触发同步**
 
 ```bash
-# 同步当月（默认强制刷新）
+# 同步当月（默认强制 fetch 最新分片）
 curl -X POST http://localhost:18000/api/v1/lkml/sync \
   -H "Authorization: Bearer <token>" \
   -H "Content-Type: application/json" \
   -d '{}'
 
-# 同步指定月份（默认复用本地，不强制刷新）
+# 同步指定月份（默认从本地镜像读取，不联网）
 curl -X POST http://localhost:18000/api/v1/lkml/sync \
   -H "Authorization: Bearer <token>" \
   -H "Content-Type: application/json" \
   -d '{"year_month": "2024-06"}'
 
-# 强制重新下载指定月份（覆盖已有文件）
+# 强制 fetch 最新分片（覆盖本地镜像）
 curl -X POST http://localhost:18000/api/v1/lkml/sync \
   -H "Authorization: Bearer <token>" \
   -H "Content-Type: application/json" \
   -d '{"year_month": "2024-06", "force_refresh": true}'
 ```
 
+> 注意：历史月份的邮件可能在较旧分片中。若本地只克隆了最新分片，
+> 历史月份同步会返回 `total=0`。建议先运行
+> `./scripts/download-lkml-mbox.sh --latest N` 下载足够多的分片。
+
 #### 3.3 预创建数据卷目录
 
 避免首次启动时 Docker 自动以 root 创建卷目录导致权限问题：
 
 ```bash
-mkdir -p volumes/{kernel-mirror,lkml-mbox,outputs,opencode-config}
+mkdir -p volumes/{kernel-mirror,lkml-mirror,outputs,opencode-config}
 chmod 777 volumes/*  # 容器内非 root 用户可读写
 ```
 
@@ -343,7 +355,7 @@ lkml/
 │       └── utils/                  # format
 └── volumes/                        # 持久化卷（git ignore 内容）
     ├── kernel-mirror/              # Linux git 镜像
-    ├── lkml-mbox/                  # mbox 归档
+    ├── lkml-mirror/                # LKML git 分片镜像（lkml-{N}.git）
     ├── outputs/                    # 历史分析产出
     └── opencode-config/            # OpenCode 配置与技能
 ```
@@ -398,7 +410,7 @@ SkillConfig:    name · git_url · local_path · branch · enabled
 
 | 任务 | Cron | 说明 |
 |---|---|---|
-| `lkml-sync-current` | `0 */6 * * *` | 每 6 小时（00:00/06:00/12:00/18:00 UTC）强制刷新当月 mbox，按 message_id 去重 |
+| `lkml-sync-current` | `0 */6 * * *` | 每 6 小时（00:00/06:00/12:00/18:00 UTC）git fetch 最新分片并入库当月邮件，按 message_id 去重 |
 | `daily-digest` | `30 6 * * *` | 每日 06:30 生成当日技术文章 + 触发订阅邮件 |
 | `weekly-kernel-fetch` | `0 4 * * 0` | 每周日 04:00 fetch kernel 镜像最新提交 |
 

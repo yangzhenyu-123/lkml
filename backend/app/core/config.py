@@ -48,10 +48,19 @@ class Settings(BaseSettings):
     INIT_ADMIN_EMAIL: str = "admin@example.com"
 
     # ---------- LKML ----------
+    # 旧的 HTTP mbox 接口已被 lore.kernel.org Anubis 反爬保护拦截，不再使用
     LKML_BASE_URL: str = "https://lore.kernel.org/linux-kernel"
+    # git 分片镜像根 URL：每个分片是一个 ~1GB 的 bare git 仓库
+    # URL 形如 https://lore.kernel.org/lkml/{0..N}，分片 0=最旧，N=最新
+    LKML_GIT_BASE: str = "https://lore.kernel.org/lkml"
+    # 探测分片数量时的最大重试次数与超时
+    LKML_PROBE_TIMEOUT: int = 20
 
     # ---------- 路径 ----------
     KERNEL_MIRROR_PATH: str = "/data/kernel-mirror"
+    # git 分片镜像本地目录（每个分片克隆为 lkml-{N}.git bare 仓库）
+    LKML_MIRROR_PATH: str = "/data/lkml-mirror"
+    # 保留以兼容旧 .env，但代码不再使用
     LKML_MBOX_PATH: str = "/data/lkml-mbox"
     OUTPUTS_PATH: str = "/data/outputs"
     OPENCODE_CONFIG_PATH: str = "/data/opencode-config"
@@ -97,6 +106,13 @@ class Settings(BaseSettings):
     @property
     def lkml_mbox_dir(self) -> Path:
         p = Path(self.LKML_MBOX_PATH)
+        p.mkdir(parents=True, exist_ok=True)
+        return p
+
+    @property
+    def lkml_mirror_dir(self) -> Path:
+        """git 分片镜像目录（每个分片克隆为 lkml-{N}.git bare 仓库）。"""
+        p = Path(self.LKML_MIRROR_PATH)
         p.mkdir(parents=True, exist_ok=True)
         return p
 
