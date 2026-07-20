@@ -1,7 +1,7 @@
 """认证路由：登录、刷新、当前用户。"""
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, Form, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -13,17 +13,25 @@ from app.core.security import (
     verify_token,
 )
 from app.models.user import User
-from app.schemas.auth import LoginRequest, MeRead, RefreshRequest, Token
+from app.schemas.auth import MeRead, RefreshRequest, Token
 
 router = APIRouter()
 
 
 @router.post("/login", response_model=Token)
-async def login(payload: LoginRequest, db: AsyncSession = Depends(get_db)) -> Token:
-    """用户名 + 密码登录，返回 JWT。"""
-    result = await db.execute(select(User).where(User.username == payload.username))
+async def login(
+    db: AsyncSession = Depends(get_db),
+    username: str = Form(...),
+    password: str = Form(...),
+) -> Token:
+    """用户名 + 密码登录，返回 JWT。
+
+    使用 Form 而非 Pydantic 模型，支持 application/x-www-form-urlencoded
+    （前端传统表单提交方式，与 OAuth2PasswordRequestForm 标准一致）。
+    """
+    result = await db.execute(select(User).where(User.username == username))
     user = result.scalar_one_or_none()
-    if not user or not verify_password(payload.password, user.hashed_password):
+    if not user or not verify_password(password, user.hashed_password):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid username or password",
