@@ -9,9 +9,29 @@ from sqlalchemy.ext.asyncio import (
 
 from app.core.config import settings
 
+
+def _ensure_async_driver(url: str) -> str:
+    """规范化数据库 URL 为 async 驱动形式。
+
+    容器环境变量可能注入 `postgresql://...`（同步形式），
+    而 create_async_engine 需要 `postgresql+asyncpg://`。
+    这里自动补全 +asyncpg，避免启动时报错：
+        'The asyncio extension requires an async driver to be used.
+         The loaded 'psycopg2' is not async.'
+    """
+    if not url:
+        return url
+    if url.startswith("postgresql://"):
+        return url.replace("postgresql://", "postgresql+asyncpg://", 1)
+    if url.startswith("postgres://"):
+        # SQLAlchemy 1.4 起 postgres:// 已弃用，统一为 postgresql://
+        return url.replace("postgres://", "postgresql+asyncpg://", 1)
+    return url
+
+
 # 显式关闭 statement cache 以避免 PostgreSQL 16 prepared statement 复用问题
 engine = create_async_engine(
-    settings.DATABASE_URL,
+    _ensure_async_driver(settings.DATABASE_URL),
     echo=settings.DEBUG,
     pool_pre_ping=True,
     future=True,
