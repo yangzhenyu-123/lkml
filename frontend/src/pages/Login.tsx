@@ -10,12 +10,12 @@ export default function Login() {
 
   const handleSubmit = async (values: { username: string; password: string }) => {
     setLoading(true);
-    const ok = await login(values.username, values.password);
+    const result = await login(values.username, values.password);
     setLoading(false);
-    if (ok) {
+    if (result.ok) {
       message.success("登录成功");
     } else {
-      message.error("用户名或密码错误");
+      message.error(result.error || "登录失败");
     }
   };
 
