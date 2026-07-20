@@ -22,6 +22,9 @@ ENV VITE_API_BASE=$VITE_API_BASE
 # 执行生产构建，产物输出到 dist 目录
 RUN npm run build
 
+# 构建失败快速失败：确保 index.html 存在
+RUN test -f /app/dist/index.html || (echo "BUILD FAILED: dist/index.html not found" && exit 1)
+
 
 # ============ 运行阶段 ============
 # 基于 nginx alpine 镜像，托管静态资源
@@ -32,6 +35,11 @@ COPY --from=builder /app/dist /usr/share/nginx/html
 
 # 复制自定义 nginx 配置，覆盖默认配置
 COPY nginx.conf /etc/nginx/conf.d/default.conf
+
+# 确保 nginx worker 可读静态文件（防止 403）
+# nginx:alpine 默认 worker 以 nginx 用户运行，但 COPY 产物 owner 是 root
+RUN chown -R nginx:nginx /usr/share/nginx/html && \
+    chmod -R 755 /usr/share/nginx/html
 
 # 暴露 80 端口供外部访问
 EXPOSE 80

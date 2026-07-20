@@ -144,8 +144,10 @@ services:
     build:
       context: ./frontend
       dockerfile: Dockerfile
+      # VITE_API_BASE 默认空（同源，由 nginx 反代 /api/ 到后端）。
+      # 仅在前后端分离部署时才需指定，例如 VITE_API_BASE=https://api.example.com
       args:
-        VITE_API_BASE: ${VITE_API_BASE:-http://localhost:18000}
+        VITE_API_BASE: ${VITE_API_BASE:-}
     container_name: lkml_frontend
     restart: unless-stopped
     ports:

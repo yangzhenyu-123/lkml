@@ -12,7 +12,7 @@ import { useAuthStore } from "@/store/authStore";
 import { formatDateTime, fromNow, stageMeta } from "@/utils/format";
 import type { AnalysisJob, JobItem, StageRecord } from "@/types";
 
-const API_BASE = (import.meta.env.VITE_API_BASE as string) || "http://localhost:18000";
+const API_BASE = (import.meta.env.VITE_API_BASE as string) || "";
 const STAGE_NOS: Array<1 | 2 | 3 | 4> = [1, 2, 3, 4];
 
 export default function HistoryDetail() {
