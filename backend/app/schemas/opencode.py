@@ -26,12 +26,34 @@ class OpenCodeConfigRead(BaseModel):
 class OpenCodeConfigUpdate(BaseModel):
     api_base: Optional[str] = None
     api_key: Optional[str] = Field(
-        None, description="明文 API key，后端会加密存储。设为空串表示不修改。"
+        None,
+        description=(
+            "明文 API key，后端会加密存储。设为空串表示不修改。"
+            "该 key 会自动注入到 model 对应 provider 的环境变量"
+            "（如 OPENAI_API_KEY/ANTHROPIC_API_KEY）。"
+            "其他 provider 的凭据请通过 env_json 提供。"
+        ),
     )
-    model: Optional[str] = None
+    model: Optional[str] = Field(
+        None,
+        description=(
+            "模型名，支持两种格式："
+            "（1）`provider/model`，如 openai/gpt-4o、anthropic/claude-sonnet-4-5、"
+            "google/gemini-2.0-flash、deepseek/deepseek-chat；"
+            "（2）纯模型名 gpt-4o，后端会根据前缀自动补全 provider。"
+        ),
+    )
     timeout: Optional[int] = Field(None, ge=1, le=7200)
     max_tokens: Optional[int] = Field(None, ge=1, le=200000)
-    env_json: Optional[Dict[str, Any]] = None
+    env_json: Optional[Dict[str, Any]] = Field(
+        None,
+        description=(
+            "额外环境变量，注入到 opencode 子进程。"
+            "可在此填写其他 provider 的 API key，例如："
+            "ANTHROPIC_API_KEY、GOOGLE_API_KEY、DEEPSEEK_API_KEY、GROQ_API_KEY 等。"
+            "也会原样传递 OPENAI_API_BASE、OPENCODE_API_BASE 等端点配置。"
+        ),
+    )
     prompt_templates: Optional[Dict[str, Any]] = None
 
 

@@ -298,14 +298,21 @@ cd backend && python -c "from app.main import app"
 
 ---
 
-## ⚠️ 已知 TODO
+## ✅ 近期完成的修复
 
-代码中已用注释标注，待对照官方文档确认：
+下列早期 TODO 已全部解决，现按真实 OpenCode CLI 适配：
 
-1. **`backend/Dockerfile`**：`npm install -g opencode` 包名需对照 [OpenCode CLI](https://github.com/sst/opencode) 官方文档确认
-2. **`backend/app/services/opencode_runner.py`**：`opencode run --skill --prompt --output` 参数形式需对照官方 CLI 文档
-3. **`backend/app/main.py`**：预置 patent-disclosure-skill 的 `git_url` 已用 `https://github.com/handsomestWei/patent-disclosure-skill` 占位
-4. **前端"查看产出"**：调用的 `/history/jobs/{id}/items/{iid}/output` 端点后端尚未实现，前端已做降级提示
+1. **`backend/Dockerfile`**：`npm install -g opencode-ai`（官方包名，详见 [opencode.ai/docs](https://opencode.ai/docs)）
+2. **`backend/app/services/opencode_runner.py`**：完全重写为 `opencode run "<prompt>" --model provider/model` 形式；技能通过将其 `SKILL.md` 拼到 prompt 前缀激活；多 provider 凭据通过 `env_json` 注入子进程
+3. **`backend/app/main.py`**：预置 patent-disclosure-skill 的 `git_url` 已指向实际仓库 `https://github.com/handsomestWei/patent-disclosure-skill`
+4. **前端"查看产出"**：后端已实现 `GET /api/v1/history/jobs/{job_id}/items/{item_id}/output?kind=output|log` 端点，含路径穿越防护
+5. **`OpenCodeConfig` schema**：`model` 字段明确支持 `provider/model` 格式（如 `openai/gpt-4o`、`anthropic/claude-sonnet-4-5`），`env_json` 用于多 provider 凭据
+
+## ⚠️ 待办事项
+
+- Stage 4 产出的 `.docx` 转换（可选，需要 pandoc 容器扩展）
+- OpenCode 子进程 token 用量解析目前依赖输出正则，可考虑使用 `--format json` 改进
+- kernel-mirror 首次 clone 全量仓库耗时较长，生产环境建议预挂载卷
 
 ---
 

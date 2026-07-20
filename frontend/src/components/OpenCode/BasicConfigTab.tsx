@@ -117,8 +117,9 @@ export default function BasicConfigTab({
           label="模型名"
           name="model"
           rules={[{ required: true, message: "请输入模型名" }]}
+          extra="支持 provider/model 格式（推荐），如 openai/gpt-4o、anthropic/claude-sonnet-4-5、google/gemini-2.0-flash、deepseek/deepseek-chat；也可仅填 gpt-4o，后端自动补全 provider。"
         >
-          <Input placeholder="gpt-4o" />
+          <Input placeholder="openai/gpt-4o 或 gpt-4o" />
         </Form.Item>
 
         <div className="grid grid-cols-2 gap-4">
@@ -138,7 +139,12 @@ export default function BasicConfigTab({
           </Form.Item>
         </div>
 
-        <div className="mb-2 text-sm font-medium text-ink-700">环境变量</div>
+        <div className="mb-1 text-sm font-medium text-ink-700">环境变量</div>
+        <div className="mb-2 text-xs text-ink-400">
+          用于注入 opencode 子进程。其他 provider 的 API key
+          可填在此处（如 ANTHROPIC_API_KEY、GOOGLE_API_KEY、DEEPSEEK_API_KEY、GROQ_API_KEY），
+          也可配置 OPENAI_API_BASE 等端点。
+        </div>
         <Form.List name="env">
           {(fields, { add, remove }) => (
             <>

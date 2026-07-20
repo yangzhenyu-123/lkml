@@ -1,14 +1,17 @@
-"""历史分析作业路由：创建、查询、详情、重试、WebSocket 流。"""
+"""历史分析作业路由：创建、查询、详情、重试、产出查看、WebSocket 流。"""
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect, status
+from fastapi.responses import PlainTextResponse
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.core.config import settings
 from app.core.deps import get_current_user, get_db, require_analyst
 from app.core.websocket_manager import ws_manager
 from app.models.analysis import AnalysisJob, JobItem, StageRecord
@@ -178,6 +181,57 @@ async def retry_item(
         task_id=task.id,
         status="queued",
     )
+
+
+@router.get(
+    "/jobs/{job_id}/items/{item_id}/output",
+    response_class=PlainTextResponse,
+)
+async def get_item_output(
+    job_id: int,
+    item_id: int,
+    kind: str = Query("output", pattern="^(output|log)$"),
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(get_current_user),
+) -> PlainTextResponse:
+    """获取某 JobItem 的产出内容或日志。
+
+    - kind=output：返回 output_path 指向的文件内容（Markdown 产出）
+    - kind=log：返回 log_path 指向的执行日志
+
+    用于前端"查看产出"按钮。仅 Stage 3/4 成功 item 有产出文件。
+    """
+    item = (
+        await db.execute(
+            select(JobItem).where(
+                JobItem.id == item_id,
+                JobItem.job_id == job_id,
+            )
+        )
+    ).scalar_one_or_none()
+    if not item:
+        raise HTTPException(status_code=404, detail="Item not found")
+
+    target_path_str = item.output_path if kind == "output" else item.log_path
+    if not target_path_str:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No {kind} file for this item (stage={item.stage_no}, status={item.status})",
+        )
+
+    # 安全校验：路径必须在 OUTPUTS_PATH 下，防止路径穿越
+    outputs_root = Path(settings.OUTPUTS_PATH).resolve()
+    target = Path(target_path_str).resolve()
+    try:
+        target.relative_to(outputs_root)
+    except ValueError as exc:
+        raise HTTPException(status_code=403, detail="Path outside outputs dir") from exc
+    if not target.exists():
+        raise HTTPException(status_code=404, detail=f"{kind} file not found on disk")
+
+    content = target.read_text(encoding="utf-8", errors="replace")
+    media_type = "text/markdown; charset=utf-8" if kind == "output" else "text/plain; charset=utf-8"
+    return PlainTextResponse(content=content, media_type=media_type)
 
 
 @router.websocket("/jobs/{job_id}/stream")

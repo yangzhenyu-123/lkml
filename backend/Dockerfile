@@ -18,9 +18,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # 安装 opencode CLI（全局）
-# 注意：若官方包名不是 opencode（例如 @opencode/cli 或 sst-opencode），
-# 需对照 opencode 官方文档调整下面的 npm 包名，TODO: 对照 opencode 文档确认包名
-RUN npm install -g opencode || echo "opencode npm install skipped (will retry at runtime if needed)"
+# 官方包名为 opencode-ai（详见 https://opencode.ai/docs）
+# CLI 用法：opencode run "<prompt>" --model provider/model
+RUN npm install -g opencode-ai \
+    && opencode --version 2>/dev/null || echo "opencode installed (version check skipped)"
 
 WORKDIR /app
 

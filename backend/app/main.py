@@ -95,7 +95,8 @@ async def _init_opencode_config() -> None:
             await db.commit()
             logger.info("OpenCodeConfig singleton initialized")
 
-        # 预置 patent-disclosure-skill（如果不存在则创建占位记录）
+        # 预置 patent-disclosure-skill（如果不存在则创建）
+        # 仓库地址：https://github.com/handsomestWei/patent-disclosure-skill
         existing_skill = (
             await db.execute(
                 select(SkillConfig).where(SkillConfig.name == "patent-disclosure-skill")
@@ -104,17 +105,22 @@ async def _init_opencode_config() -> None:
         if existing_skill is None:
             skill = SkillConfig(
                 name="patent-disclosure-skill",
-                git_url=None,  # TODO: 填实际仓库地址
-                branch=None,
+                git_url="https://github.com/handsomestWei/patent-disclosure-skill",
+                branch="main",
                 local_path=None,
                 enabled=True,
-                description="Patent disclosure document generation skill",
+                description="中国专利技术交底书生成技能（项目扫描→专利点→查新→脱敏成稿→自检）",
             )
             db.add(skill)
             await db.commit()
             logger.info("Preset skill 'patent-disclosure-skill' created")
+        elif not existing_skill.git_url:
+            # 兦底：旧版本可能 git_url 为空，补全
+            existing_skill.git_url = "https://github.com/handsomestWei/patent-disclosure-skill"
+            existing_skill.branch = existing_skill.branch or "main"
+            await db.commit()
 
-        # 预置 optimization-skill
+        # 预置 optimization-skill（内置，无外部仓库；通过 prompt_template 实现逻辑）
         opt_skill = (
             await db.execute(
                 select(SkillConfig).where(SkillConfig.name == "optimization-skill")
@@ -124,9 +130,9 @@ async def _init_opencode_config() -> None:
             db.add(
                 SkillConfig(
                     name="optimization-skill",
-                    git_url=None,
+                    git_url=None,  # 内置技能，无外部仓库
                     enabled=True,
-                    description="Kernel performance optimization proposal skill",
+                    description="Kernel performance optimization proposal skill (built-in)",
                 )
             )
             await db.commit()
