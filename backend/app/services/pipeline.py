@@ -30,6 +30,24 @@ async def _publish(job_id: int, event_type: str, payload: dict) -> None:
     await ws_manager.publish(job_id, event_type, payload)
 
 
+async def _log(job_id: int, stage_no: Optional[int], level: str, message: str) -> None:
+    """推送一条日志事件到前端实时日志面板。
+
+    level: "info" | "warn" | "error" | "success"
+    stage_no: 1-4，None 表示 job 级别日志
+    """
+    await ws_manager.publish(
+        job_id,
+        "log",
+        {
+            "stage_no": stage_no,
+            "level": level,
+            "message": message,
+            "ts": datetime.utcnow().isoformat() + "Z",
+        },
+    )
+
+
 async def _get_config(db: AsyncSession) -> tuple[OpenCodeConfig, list[SkillConfig]]:
     cfg = (
         await db.execute(select(OpenCodeConfig).where(OpenCodeConfig.id == 1))
@@ -75,6 +93,7 @@ _STAGE4_TEMPLATE = (
 async def _run_stage1(job: AnalysisJob, db: AsyncSession) -> int:
     """扫描 LKML，过滤性能优化 PATCH 邮件，创建 Stage 1 item。"""
     stage = await _mark_stage_running(db, job.id, 1)
+    await _log(job.id, 1, "info", f"开始扫描 {job.year_start}-{job.year_end} 年的 LKML PATCH 邮件...")
     stmt = select(Email).where(
         Email.is_patch.is_(True),
         Email.date >= datetime(job.year_start, 1, 1),
@@ -83,14 +102,20 @@ async def _run_stage1(job: AnalysisJob, db: AsyncSession) -> int:
     if job.subsystem_filter:
         subs = [s.strip() for s in job.subsystem_filter.split(",") if s.strip()]
         stmt = stmt.where(Email.subsystem.in_(subs))
+        await _log(job.id, 1, "info", f"子系统筛选：{', '.join(subs)}")
     rows = (await db.execute(stmt)).scalars().all()
+    await _log(job.id, 1, "info", f"候选 PATCH 邮件 {len(rows)} 封")
 
     keyword: Optional[str] = job.keyword_filter
     inserted = 0
+    skipped_keyword = 0
+    skipped_perf = 0
     for e in rows:
         if keyword and keyword.lower() not in (e.subject + (e.body or "")).lower():
+            skipped_keyword += 1
             continue
         if not lkml_sync.is_performance_related(e.subject, e.body):
+            skipped_perf += 1
             continue
         item = JobItem(
             job_id=job.id,
@@ -109,6 +134,12 @@ async def _run_stage1(job: AnalysisJob, db: AsyncSession) -> int:
     stage.status = "completed"
     stage.finished_at = datetime.utcnow()
     await db.commit()
+    await _log(
+        job.id,
+        1,
+        "success",
+        f"阶段 1 完成：命中 {inserted} 封（关键词过滤 {skipped_keyword}，性能相关性过滤 {skipped_perf}）",
+    )
     await _publish(
         job.id,
         "stage_update",
@@ -126,14 +157,19 @@ async def _run_stage2(job: AnalysisJob, db: AsyncSession) -> int:
             select(JobItem).where(JobItem.job_id == job.id, JobItem.stage_no == 1)
         )
     ).scalars().all()
+    await _log(job.id, 2, "info", f"检测 {len(s1_items)} 个 PATCH 的上游合入状态...")
     unmerged = 0
-    for it in s1_items:
+    merged_count = 0
+    for idx, it in enumerate(s1_items, 1):
         # 调用 kernel_mirror 检测合入情况
         check = await asyncio.to_thread(
             kernel_mirror.check_merged, it.patch_id or "", it.title or ""
         )
         it.merged_upstream = check["merged"]
         if check["merged"]:
+            merged_count += 1
+            if idx % 20 == 0 or idx == len(s1_items):
+                await _log(job.id, 2, "info", f"已检测 {idx}/{len(s1_items)}（已合入 {merged_count}）")
             continue
         unmerged += 1
         s2_item = JobItem(
@@ -155,6 +191,12 @@ async def _run_stage2(job: AnalysisJob, db: AsyncSession) -> int:
     stage.status = "completed"
     stage.finished_at = datetime.utcnow()
     await db.commit()
+    await _log(
+        job.id,
+        2,
+        "success",
+        f"阶段 2 完成：未合入 {unmerged} / 已合入 {merged_count} / 总计 {len(s1_items)}",
+    )
     await _publish(
         job.id,
         "stage_update",
@@ -197,14 +239,16 @@ async def _run_stage3(job: AnalysisJob, db: AsyncSession, cfg: OpenCodeConfig, s
     ).scalars().all()
     stage.total_items = len(s2_items)
     await db.commit()
+    await _log(job.id, 3, "info", f"开始为 {len(s2_items)} 个未合入 PATCH 生成优化方案（调用 opencode）...")
 
     api_key = decrypt_secret(cfg.api_key_enc) if cfg.api_key_enc else ""
     template = _template(cfg, "stage3_optimization", _STAGE3_TEMPLATE)
     success = 0
     failed = 0
-    for it in s2_items:
+    for idx, it in enumerate(s2_items, 1):
         await _set_item_running(db, it)
         await _publish(job.id, "item_update", _item_payload(it))
+        await _log(job.id, 3, "info", f"[{idx}/{len(s2_items)}] 调用 opencode 生成优化方案：#{it.id} {it.title[:80]}")
         try:
             context = f"Subject: {it.title}\nAuthor: {it.author}\nSubsystem: {it.subsystem}\nPatch-ID: {it.patch_id}\n\nEmail body: {await _fetch_email_body(it.email_message_id)}"
             result = await opencode_runner.run_optimization(
@@ -225,14 +269,17 @@ async def _run_stage3(job: AnalysisJob, db: AsyncSession, cfg: OpenCodeConfig, s
             if result.ok:
                 it.status = "success"
                 success += 1
+                await _log(job.id, 3, "success", f"[{idx}/{len(s2_items)}] #{it.id} 完成（tokens={result.token_usage}）")
             else:
                 it.status = "failed"
                 it.error_message = result.error
                 failed += 1
+                await _log(job.id, 3, "error", f"[{idx}/{len(s2_items)}] #{it.id} 失败：{result.error[:200] if result.error else ''}")
         except Exception as exc:  # noqa: BLE001
             it.status = "failed"
             it.error_message = str(exc)[:1000]
             failed += 1
+            await _log(job.id, 3, "error", f"[{idx}/{len(s2_items)}] #{it.id} 异常：{str(exc)[:200]}")
         it.finished_at = datetime.utcnow()
         await db.commit()
         await _publish(job.id, "item_update", _item_payload(it))
@@ -242,6 +289,12 @@ async def _run_stage3(job: AnalysisJob, db: AsyncSession, cfg: OpenCodeConfig, s
     stage.status = "completed" if failed == 0 else "completed"
     stage.finished_at = datetime.utcnow()
     await db.commit()
+    await _log(
+        job.id,
+        3,
+        "success" if failed == 0 else "warn",
+        f"阶段 3 完成：成功 {success} / 失败 {failed} / 总计 {len(s2_items)}",
+    )
     await _publish(
         job.id,
         "stage_update",
@@ -271,14 +324,16 @@ async def _run_stage4(job: AnalysisJob, db: AsyncSession, cfg: OpenCodeConfig, s
     ).scalars().all()
     stage.total_items = len(s3_items)
     await db.commit()
+    await _log(job.id, 4, "info", f"开始为 {len(s3_items)} 个优化方案生成专利交底书...")
 
     api_key = decrypt_secret(cfg.api_key_enc) if cfg.api_key_enc else ""
     template = _template(cfg, "stage4_patent", _STAGE4_TEMPLATE)
     success = 0
     failed = 0
-    for it in s3_items:
+    for idx, it in enumerate(s3_items, 1):
         await _set_item_running(db, it)
         await _publish(job.id, "item_update", _item_payload(it))
+        await _log(job.id, 4, "info", f"[{idx}/{len(s3_items)}] 调用 opencode 生成专利交底书：#{it.id}")
         try:
             # 读取 Stage 3 产出文件作为输入
             optimization_doc = ""
@@ -306,14 +361,17 @@ async def _run_stage4(job: AnalysisJob, db: AsyncSession, cfg: OpenCodeConfig, s
             if result.ok:
                 it.status = "success"
                 success += 1
+                await _log(job.id, 4, "success", f"[{idx}/{len(s3_items)}] #{it.id} 完成（tokens={result.token_usage}）")
             else:
                 it.status = "failed"
                 it.error_message = result.error
                 failed += 1
+                await _log(job.id, 4, "error", f"[{idx}/{len(s3_items)}] #{it.id} 失败：{result.error[:200] if result.error else ''}")
         except Exception as exc:  # noqa: BLE001
             it.status = "failed"
             it.error_message = str(exc)[:1000]
             failed += 1
+            await _log(job.id, 4, "error", f"[{idx}/{len(s3_items)}] #{it.id} 异常：{str(exc)[:200]}")
         it.finished_at = datetime.utcnow()
         await db.commit()
         await _publish(job.id, "item_update", _item_payload(it))
@@ -323,6 +381,12 @@ async def _run_stage4(job: AnalysisJob, db: AsyncSession, cfg: OpenCodeConfig, s
     stage.status = "completed"
     stage.finished_at = datetime.utcnow()
     await db.commit()
+    await _log(
+        job.id,
+        4,
+        "success" if failed == 0 else "warn",
+        f"阶段 4 完成：成功 {success} / 失败 {failed} / 总计 {len(s3_items)}",
+    )
     await _publish(
         job.id,
         "stage_update",
@@ -396,10 +460,14 @@ async def run_job(job_id: int) -> None:
         job.started_at = datetime.utcnow()
         await db.commit()
         await _publish(job_id, "job_update", {"status": "running"})
+        await _log(job_id, None, "info", f"任务启动：{job.name}（年份 {job.year_start}-{job.year_end}）")
 
         try:
             cfg, skills = await _get_config(db)
+            await _log(job_id, None, "info", f"加载 opencode 配置：model={cfg.model or '(默认)'}，启用 skills={len(skills)} 个")
             await opencode_runner.ensure_skills(skills)
+            if skills:
+                await _log(job_id, None, "info", f"已同步 skills：{', '.join(s.name for s in skills)}")
 
             job.current_stage = 1
             job.status = "stage1"
@@ -429,6 +497,7 @@ async def run_job(job_id: int) -> None:
             job.finished_at = datetime.utcnow()
             await db.commit()
             await _publish(job_id, "job_update", {"status": "completed"})
+            await _log(job_id, None, "success", "全部 4 阶段完成，任务结束")
         except Exception as exc:  # noqa: BLE001
             job.status = "failed"
             job.error_message = str(exc)[:2000]
@@ -439,6 +508,7 @@ async def run_job(job_id: int) -> None:
                 "job_update",
                 {"status": "failed", "error_message": job.error_message},
             )
+            await _log(job_id, None, "error", f"任务失败：{str(exc)[:300]}")
 
 
 async def run_single_item(item_id: int) -> None:

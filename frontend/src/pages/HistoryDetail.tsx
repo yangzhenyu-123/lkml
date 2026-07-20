@@ -1,6 +1,19 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { Alert, Button, Card, Modal, Spin, Tag, message } from "antd";
-import { ArrowLeftOutlined, ReloadOutlined } from "@ant-design/icons";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  Alert,
+  Button,
+  Card,
+  Modal,
+  Spin,
+  Tag,
+  message,
+} from "antd";
+import {
+  ArrowLeftOutlined,
+  ReloadOutlined,
+  DownOutlined,
+  UpOutlined,
+} from "@ant-design/icons";
 import { useNavigate, useParams } from "react-router-dom";
 import { historyApi } from "@/api/history";
 import { JobStatusBadge } from "@/components/StatusBadge";
@@ -10,10 +23,34 @@ import ItemDrawer from "@/components/History/ItemDrawer";
 import { useJobStream } from "@/components/History/useJobStream";
 import { useAuthStore } from "@/store/authStore";
 import { formatDateTime, fromNow, stageMeta } from "@/utils/format";
-import type { AnalysisJob, JobItem, StageRecord } from "@/types";
+import type {
+  AnalysisJob,
+  JobItem,
+  StageRecord,
+  WsLogPayload,
+} from "@/types";
 
 const API_BASE = (import.meta.env.VITE_API_BASE as string) || "";
 const STAGE_NOS: Array<1 | 2 | 3 | 4> = [1, 2, 3, 4];
+// job 终态：进入终态后停止轮询
+const TERMINAL_STATUS: ReadonlyArray<AnalysisJob["status"]> = [
+  "completed",
+  "failed",
+];
+
+// 日志级别配色
+const LOG_LEVEL_COLOR: Record<WsLogPayload["level"], string> = {
+  info: "#3B82F6",
+  warn: "#F59E0B",
+  error: "#EF4444",
+  success: "#10B981",
+};
+const LOG_LEVEL_TAG: Record<WsLogPayload["level"], string> = {
+  info: "INFO",
+  warn: "WARN",
+  error: "ERR ",
+  success: "OK  ",
+};
 
 export default function HistoryDetail() {
   const { id } = useParams<{ id: string }>();
@@ -27,12 +64,32 @@ export default function HistoryDetail() {
   const [activeItem, setActiveItem] = useState<JobItem | null>(null);
   const [retrying, setRetrying] = useState(false);
 
+  // 实时日志面板状态
+  const [logs, setLogs] = useState<WsLogPayload[]>([]);
+  const [logPanelOpen, setLogPanelOpen] = useState(true);
+  const logEndRef = useRef<HTMLDivElement | null>(null);
+
   // OutputViewer 顶层状态：卡片与抽屉的"查看产出"都通过此触发
   const [outputOpen, setOutputOpen] = useState(false);
   const [outputLoading, setOutputLoading] = useState(false);
   const [outputContent, setOutputContent] = useState<string | undefined>(undefined);
   const [outputError, setOutputError] = useState<string | undefined>(undefined);
   const [outputTitle, setOutputTitle] = useState("产出查看");
+
+  const appendLog = useCallback((entry: WsLogPayload) => {
+    setLogs((prev) => {
+      // 限制最多 500 条避免内存爆炸
+      const next = [...prev, entry];
+      return next.length > 500 ? next.slice(next.length - 500) : next;
+    });
+  }, []);
+
+  // 自动滚动到最新日志
+  useEffect(() => {
+    if (logPanelOpen && logEndRef.current) {
+      logEndRef.current.scrollTop = logEndRef.current.scrollHeight;
+    }
+  }, [logs, logPanelOpen]);
 
   const fetchDetail = useCallback(async () => {
     if (!Number.isFinite(jobId)) return;
@@ -58,7 +115,28 @@ export default function HistoryDetail() {
     setStages,
     setItems,
     setActiveItem,
+    appendLog,
   });
+
+  // ============ 轮询兜底 ============
+  // 即便 WebSocket 因字段不匹配、连接失败、事件丢失等问题失效，
+  // 只要 job 还在非终态，每 3 秒轮询一次详情接口，确保 UI 最终能反映任务结束。
+  // 这解决了"任务已完成但前端一直转圈"的根因。
+  const jobIsTerminal = job ? TERMINAL_STATUS.includes(job.status) : false;
+  useEffect(() => {
+    if (jobIsTerminal) return; // 已终态，停止轮询
+    const timer = window.setInterval(async () => {
+      try {
+        const resp = await historyApi.detail(jobId);
+        setJob(resp.job);
+        setStages(resp.stages);
+        setItems(resp.items);
+      } catch {
+        // 静默失败，下一轮再试
+      }
+    }, 3000);
+    return () => window.clearInterval(timer);
+  }, [jobId, jobIsTerminal]);
 
   const itemsByStage = useMemo(() => {
     const map: Record<number, JobItem[]> = { 1: [], 2: [], 3: [], 4: [] };
@@ -79,7 +157,6 @@ export default function HistoryDetail() {
 
   // 产出查看：output_path 为后端文件路径，前端无法直接读取。
   // 通过 GET /api/v1/history/jobs/{jobId}/items/{itemId}/output 拉取文本内容。
-  // 若该端点尚未实现，则降级为 message.info 提示路径，并备注需后端补充该端点。
   const handleViewOutput = useCallback(async (item: JobItem) => {
     setOutputTitle(`阶段${item.stage_no} 产出 · #${item.id}`);
     setOutputOpen(true);
@@ -96,7 +173,6 @@ export default function HistoryDetail() {
       setOutputContent(await resp.text());
     } catch (err) {
       setOutputError((err as Error).message);
-      message.info(`产出文件路径：${item.output_path ?? "（无）"}（需后端补充该端点）`);
     } finally {
       setOutputLoading(false);
     }
@@ -238,6 +314,55 @@ export default function HistoryDetail() {
           />
         ))}
       </div>
+
+      {/* 实时日志面板 */}
+      <Card
+        variant="borderless"
+        className="lk-card"
+        size="small"
+        title={
+          <div className="flex items-center justify-between">
+            <span className="text-sm font-medium">
+              实时日志 {logs.length > 0 && <Tag className="!ml-1">{logs.length}</Tag>}
+            </span>
+            <Button
+              size="small"
+              type="text"
+              onClick={() => setLogPanelOpen((v) => !v)}
+              icon={logPanelOpen ? <UpOutlined /> : <DownOutlined />}
+            >
+              {logPanelOpen ? "收起" : "展开"}
+            </Button>
+          </div>
+        }
+      >
+        {logPanelOpen && (
+          <div
+            ref={logEndRef}
+            className="bg-gray-900 text-gray-100 text-xs mono rounded p-3 overflow-auto"
+            style={{ maxHeight: 320, minHeight: 80 }}
+          >
+            {logs.length === 0 ? (
+              <div className="text-gray-400">
+                暂无日志输出。任务运行中会实时打印 pipeline 各阶段的执行进度...
+              </div>
+            ) : (
+              logs.map((entry, idx) => (
+                <div key={idx} className="leading-relaxed whitespace-pre-wrap break-all">
+                  <span className="text-gray-500">[{entry.ts.slice(11, 19)}]</span>{" "}
+                  <span style={{ color: LOG_LEVEL_COLOR[entry.level] }}>
+                    {LOG_LEVEL_TAG[entry.level]}
+                  </span>{" "}
+                  {entry.stage_no !== null && (
+                    <span className="text-purple-300">[S{entry.stage_no}]</span>
+                  )}{" "}
+                  <span>{entry.message}</span>
+                </div>
+              ))
+            )}
+          </div>
+        )}
+      </Card>
 
       <ItemDrawer
         item={activeItem}

@@ -14,6 +14,7 @@ from sqlalchemy.orm import selectinload
 from app.core.config import settings
 from app.core.deps import get_current_user, get_db, require_analyst
 from app.core.websocket_manager import ws_manager
+from app.db.session import async_session_factory
 from app.models.analysis import AnalysisJob, JobItem, StageRecord
 from app.models.user import User
 from app.schemas.analysis import (
@@ -236,12 +237,63 @@ async def get_item_output(
 
 @router.websocket("/jobs/{job_id}/stream")
 async def job_stream(ws: WebSocket, job_id: int) -> None:
-    """WebSocket 端点：推送某 job 的 stage/item 状态变更。"""
+    """WebSocket 端点：推送某 job 的 stage/item 状态变更。
+
+    连接建立后立即推送一次 `snapshot` 事件，包含 job + stages + items 当前状态，
+    用于前端补偿"建立连接前已发生"的事件（任务可能瞬间完成）。
+    """
     await ws_manager.connect(job_id, ws)
     try:
-        # 主动发送一次连接确认
+        # 1. 主动发送一次连接确认
         await ws.send_text(f'{{"type":"connected","job_id":{job_id}}}')
-        # 保持连接，等待后端 publish 推送；同时消费 ping
+
+        # 2. 推送当前 DB 快照（解决"事件丢失"问题：WS 是 push-based，不缓存历史）
+        try:
+            async with async_session_factory() as db:
+                job = (
+                    await db.execute(select(AnalysisJob).where(AnalysisJob.id == job_id))
+                ).scalar_one_or_none()
+                if job:
+                    stages = (
+                        await db.execute(
+                            select(StageRecord)
+                            .where(StageRecord.job_id == job_id)
+                            .order_by(StageRecord.stage_no)
+                        )
+                    ).scalars().all()
+                    items = (
+                        await db.execute(
+                            select(JobItem)
+                            .where(JobItem.job_id == job_id)
+                            .order_by(JobItem.stage_no, JobItem.id)
+                        )
+                    ).scalars().all()
+                    snapshot_payload = {
+                        "job": AnalysisJobRead.model_validate(job).model_dump(),
+                        "stages": [
+                            StageRecordRead.model_validate(s).model_dump() for s in stages
+                        ],
+                        "items": [
+                            JobItemRead.model_validate(i).model_dump() for i in items
+                        ],
+                    }
+                    import json
+                    await ws.send_text(
+                        json.dumps(
+                            {
+                                "type": "snapshot",
+                                "job_id": job_id,
+                                "payload": snapshot_payload,
+                            },
+                            ensure_ascii=False,
+                            default=str,
+                        )
+                    )
+        except Exception:  # noqa: BLE001
+            # snapshot 推送失败不阻断连接
+            pass
+
+        # 3. 保持连接，等待后端 publish 推送；同时消费 ping
         while True:
             await ws.receive_text()
     except WebSocketDisconnect:

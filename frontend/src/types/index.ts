@@ -125,33 +125,52 @@ export interface JobDetail {
 }
 
 // WebSocket 事件
-export interface WsJobUpdate {
-  event: "job_update";
-  job_id: number;
+// 后端协议：{ type: "job_update"|"stage_update"|"item_update"|"log"|"snapshot"|"connected",
+//            job_id: number, payload: {...} }
+export interface WsJobUpdatePayload {
   status: JobStatus;
-  current_stage: number;
+  current_stage?: number;
+  error_message?: string | null;
 }
-export interface WsStageUpdate {
-  event: "stage_update";
-  job_id: number;
+export interface WsStageUpdatePayload {
   stage_no: number;
   status: "pending" | "running" | "completed" | "failed";
-  success_items: number;
-  failed_items: number;
-  total_items: number;
+  success_items?: number;
+  failed_items?: number;
+  total_items?: number;
 }
-export interface WsItemUpdate {
-  event: "item_update";
-  job_id: number;
-  stage_no: number;
+export interface WsItemUpdatePayload {
   item_id: number;
+  stage_no: number;
   status: ItemStatus;
   version: number;
   output_path: string | null;
   error_message: string | null;
-  token_usage: number;
+  token_usage?: number;
 }
-export type WsEvent = WsJobUpdate | WsStageUpdate | WsItemUpdate;
+export interface WsLogPayload {
+  stage_no: number | null;
+  level: "info" | "warn" | "error" | "success";
+  message: string;
+  ts: string;
+}
+export interface WsSnapshotPayload {
+  job: AnalysisJob;
+  stages: StageRecord[];
+  items: JobItem[];
+}
+
+export interface WsEvent {
+  type:
+    | "connected"
+    | "job_update"
+    | "stage_update"
+    | "item_update"
+    | "log"
+    | "snapshot";
+  job_id: number;
+  payload?: Record<string, unknown>;
+}
 
 // ============ 每日文章 ============
 export interface DailyArticle {
