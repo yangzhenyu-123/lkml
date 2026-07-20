@@ -2,11 +2,12 @@ import { useCallback, useEffect, useState } from "react";
 import {
   Button,
   Card,
+  Checkbox,
   Form,
   Input,
-  InputNumber,
   Modal,
   Select,
+  Slider,
   Spin,
   Table,
   Tag,
@@ -18,6 +19,49 @@ import { historyApi } from "@/api/history";
 import { JobStatusBadge } from "@/components/StatusBadge";
 import { fromNow, jobStatusMap, stageMeta } from "@/utils/format";
 import type { AnalysisJob, AnalysisJobCreate, JobStatus } from "@/types";
+
+// 预置子系统列表（与后端 lkml_sync.py 的 _SUBSYSTEM_KEYWORDS 对齐）
+const SUBSYSTEM_OPTIONS = [
+  { label: "调度器 (sched)", value: "sched" },
+  { label: "内存管理 (mm)", value: "mm" },
+  { label: "网络 (net)", value: "net" },
+  { label: "文件系统 (fs)", value: "fs" },
+  { label: "块层 (block)", value: "block" },
+  { label: "驱动 (drivers)", value: "drivers" },
+  { label: "架构 (arch)", value: "arch" },
+  { label: "锁机制 (locking)", value: "locking" },
+  { label: "追踪 (tracing)", value: "tracing" },
+  { label: "安全 (security)", value: "security" },
+];
+
+// 预置性能相关关键词（与后端 _PERF_KEYWORDS 对齐）
+const KEYWORD_OPTIONS = [
+  { label: "performance", value: "performance" },
+  { label: "latency", value: "latency" },
+  { label: "throughput", value: "throughput" },
+  { label: "optimization", value: "optimization" },
+  { label: "scalability", value: "scalability" },
+  { label: "benchmark", value: "benchmark" },
+  { label: "speedup", value: "speedup" },
+  { label: "faster", value: "faster" },
+  { label: "hot path", value: "hot path" },
+  { label: "slow path", value: "slow path" },
+  { label: "overhead", value: "overhead" },
+  { label: "cache miss", value: "cache miss" },
+  { label: "batch", value: "batch" },
+];
+
+const CURRENT_YEAR = new Date().getFullYear();
+// 年份范围：LKML 最早 1991（Linux 诞生），最晚当前年份
+const YEAR_MIN = 1991;
+const YEAR_MAX = CURRENT_YEAR;
+const YEAR_MARKS = {
+  [YEAR_MIN]: "1991",
+  2000: "2000",
+  2010: "2010",
+  2020: "2020",
+  [YEAR_MAX]: String(YEAR_MAX),
+};
 
 const PAGE_SIZE = 20;
 
@@ -37,7 +81,7 @@ export default function HistoryList() {
   const [status, setStatus] = useState<string>("");
   const [modalOpen, setModalOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
-  const [form] = Form.useForm<AnalysisJobCreate>();
+  const [form] = Form.useForm<unknown>();
 
   const fetchData = useCallback(async () => {
     setLoading(true);
@@ -59,15 +103,35 @@ export default function HistoryList() {
   }, [fetchData]);
 
   const handleCreate = async () => {
-    let values: AnalysisJobCreate;
+    type CreateFormValues = {
+      name: string;
+      year_range: [number, number];
+      subsystems: string[];
+      keywords: string[];
+      extra_keywords?: string;
+    };
+    let values: CreateFormValues;
     try {
-      values = await form.validateFields();
+      values = await form.validateFields() as CreateFormValues;
     } catch {
       return; // 校验失败，表单自身已显示错误
     }
+    // 合并预置关键词与额外关键词
+    const extraList = (values.extra_keywords || "")
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+    const allKeywords = [...values.keywords, ...extraList];
+    const payload: AnalysisJobCreate = {
+      name: values.name,
+      year_start: values.year_range[0],
+      year_end: values.year_range[1],
+      subsystem_filter: values.subsystems.length > 0 ? values.subsystems.join(",") : undefined,
+      keyword_filter: allKeywords.length > 0 ? allKeywords.join(",") : undefined,
+    };
     setSubmitting(true);
     try {
-      const job = await historyApi.create(values);
+      const job = await historyApi.create(payload);
       message.success("任务已创建，开始进入详情");
       setModalOpen(false);
       form.resetFields();
@@ -207,9 +271,19 @@ export default function HistoryList() {
         okText="创建并进入"
         cancelText="取消"
         destroyOnClose
-        width={560}
+        width={720}
       >
-        <Form form={form} layout="vertical" className="mt-2" preserve={false}>
+        <Form
+          form={form}
+          layout="vertical"
+          className="mt-2"
+          preserve={false}
+          initialValues={{
+            year_range: [CURRENT_YEAR - 2, CURRENT_YEAR],
+            subsystems: [],
+            keywords: [],
+          }}
+        >
           <Form.Item
             name="name"
             label="任务名称"
@@ -217,27 +291,33 @@ export default function HistoryList() {
           >
             <Input placeholder="例如：2023 年调度器优化挖掘" />
           </Form.Item>
-          <div className="grid grid-cols-2 gap-3">
-            <Form.Item
-              name="year_start"
-              label="起始年份"
-              rules={[{ required: true, message: "请输入起始年份" }]}
-            >
-              <InputNumber className="!w-full" min={1990} max={2100} placeholder="2018" />
-            </Form.Item>
-            <Form.Item
-              name="year_end"
-              label="结束年份"
-              rules={[{ required: true, message: "请输入结束年份" }]}
-            >
-              <InputNumber className="!w-full" min={1990} max={2100} placeholder="2024" />
-            </Form.Item>
-          </div>
-          <Form.Item name="subsystem_filter" label="子系统筛选（逗号分隔）">
-            <Input placeholder="scheduler, mm, net" />
+
+          <Form.Item
+            name="year_range"
+            label="年份范围"
+            tooltip="拖动滑块选择起止年份（含两端）"
+            rules={[{ required: true, message: "请选择年份范围" }]}
+          >
+            <Slider
+              range
+              min={YEAR_MIN}
+              max={YEAR_MAX}
+              marks={YEAR_MARKS}
+              step={1}
+              tooltip={{ formatter: (v) => `${v} 年` }}
+            />
           </Form.Item>
-          <Form.Item name="keyword_filter" label="关键词">
-            <Input.TextArea rows={3} placeholder="performance, latency, throughput" />
+
+          <Form.Item name="subsystems" label="子系统筛选（可多选）">
+            <Checkbox.Group options={SUBSYSTEM_OPTIONS} className="flex flex-wrap gap-2" />
+          </Form.Item>
+
+          <Form.Item name="keywords" label="关键词（可多选，预置性能相关）">
+            <Checkbox.Group options={KEYWORD_OPTIONS} className="flex flex-wrap gap-2" />
+          </Form.Item>
+
+          <Form.Item name="extra_keywords" label="额外关键词（可选，逗号分隔）">
+            <Input placeholder="例如：rcu, lockless, numa" />
           </Form.Item>
         </Form>
       </Modal>
