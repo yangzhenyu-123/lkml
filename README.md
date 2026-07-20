@@ -128,6 +128,10 @@ OPENCODE_API_KEY=sk-your-actual-api-key
 OPENCODE_MODEL=gpt-4o
 ```
 
+> ⚠️ **`VITE_API_BASE` 务必留空**（保持 `VITE_API_BASE=` 即可）。
+> 单机部署下前端通过 nginx 反代同源访问后端，留空才能从任意主机访问。
+> 若设为 `http://localhost:18000`，浏览器会向**自己机器**的 18000 端口发请求，跨主机访问必然失败。
+
 ### 3. 本地预准备文件（可选，加速首次启动）
 
 容器启动后可直接使用以下预准备的本地文件，避免首次 clone / 下载耗时过长：
