@@ -27,17 +27,37 @@ def _run(coro):
 
 # ============ LKML 同步 ============
 @celery_app.task(name="app.workers.tasks.sync_lkml_task", bind=True)
-def sync_lkml_task(self, year_month: Optional[str] = None) -> dict[str, Any]:
+def sync_lkml_task(
+    self,
+    year_month: Optional[str] = None,
+    *,
+    force_refresh: Optional[bool] = None,
+) -> dict[str, Any]:
     """同步 LKML mbox。
 
-    year_month 格式 "YYYY-MM"。不传则取当前月（UTC）。
+    - year_month 格式 "YYYY-MM"。不传则取当前月（UTC）。
+    - force_refresh：
+        None（默认）= 自动判断（当月强制刷新，历史月份复用本地文件）
+        True = 强制重新下载覆盖
+        False = 永不覆盖，已存在即复用
     """
     from app.services import lkml_sync
 
     if not year_month:
-        year_month = datetime.utcnow().strftime("%Y-%m")
-    year, month = year_month.split("-")
-    result = _run(lkml_sync.sync_year_month(int(year), int(month)))
+        # 每日定时任务：当月强制刷新
+        now = datetime.utcnow()
+        year_month = now.strftime("%Y-%m")
+        if force_refresh is None:
+            force_refresh = True
+        result = _run(lkml_sync.sync_current_month(force_refresh=force_refresh))
+    else:
+        year, month = year_month.split("-")
+        if force_refresh is None:
+            # 指定月份：历史月份不刷新，当月根据 mtime 间隔判断
+            force_refresh = False
+        result = _run(
+            lkml_sync.sync_year_month(int(year), int(month), force_refresh=force_refresh)
+        )
     # 同步完更新回复数
     _run(lkml_sync.update_reply_counts())
     return {"year_month": year_month, **result}

@@ -139,15 +139,48 @@ def parse_mbox(mbox_path: Path) -> Iterator[Message]:
         mbox.close()
 
 
-async def download_mbox(year: int, month: int, *, session: Optional[aiohttp.ClientSession] = None) -> Path:
+async def download_mbox(
+    year: int,
+    month: int,
+    *,
+    session: Optional[aiohttp.ClientSession] = None,
+    force_refresh: bool = False,
+) -> Path:
     """下载 https://lore.kernel.org/linux-kernel/{YYYY}-{MM}.mbox 到 LKML_MBOX_PATH。
 
-    返回本地文件路径。如已存在则直接复用。
+    返回本地文件路径。
+
+    刷新策略：
+    - 历史月份（已过去的月份）：如已存在且非空，直接复用，不重复下载
+      （历史归档不再变化，无需刷新）
+    - 当月：默认每次调用都重新下载（当月归档会持续追加新邮件）
+      可通过 force_refresh=False 跳过当月刷新
+    - force_refresh=True：强制重新下载（用于手动触发覆盖已有文件）
+
+    下载采用「先写 .part 再原子 rename」策略，避免下载失败时污染已有文件。
     """
     fname = f"{year:04d}-{month:02d}.mbox"
     target = settings.lkml_mbox_dir / fname
-    if target.exists() and target.stat().st_size > 0:
+
+    # 判断是否为当月
+    now = datetime.utcnow()
+    is_current_month = (year == now.year and month == now.month)
+
+    # 历史月份且已存在：直接复用
+    if not force_refresh and not is_current_month and target.exists() and target.stat().st_size > 0:
         return target
+
+    # 当月且已存在且未强制刷新：根据 mtime 判断是否需要刷新（间隔 > 1 小时才刷新）
+    if (
+        not force_refresh
+        and is_current_month
+        and target.exists()
+        and target.stat().st_size > 0
+    ):
+        mtime = target.stat().st_mtime
+        age_seconds = now.timestamp() - mtime
+        if age_seconds < 3600:  # 1 小时内已刷新过，跳过
+            return target
 
     url = f"{settings.LKML_BASE_URL.rstrip('/')}/{fname}"
     own_session = session is None
@@ -158,7 +191,10 @@ async def download_mbox(year: int, month: int, *, session: Optional[aiohttp.Clie
             if resp.status != 200:
                 raise RuntimeError(f"Failed to download {url}: HTTP {resp.status}")
             data = await resp.read()
-        target.write_bytes(data)
+        # 先写 .part 文件，成功后原子 rename，避免下载失败污染已有文件
+        part = target.with_suffix(target.suffix + ".part")
+        part.write_bytes(data)
+        part.replace(target)
         return target
     finally:
         if own_session and session is not None:
@@ -213,13 +249,32 @@ async def _store_emails(messages: list[Message], raw_mbox_path: Path) -> int:
     return inserted
 
 
-async def sync_year_month(year: int, month: int) -> dict:
-    """下载 + 解析 + 入库。返回 {path, inserted}。"""
-    path = await download_mbox(year, month)
+async def sync_year_month(year: int, month: int, *, force_refresh: bool = False) -> dict:
+    """下载 + 解析 + 入库。返回 {path, inserted, total, refreshed}。
+
+    - force_refresh=True：强制重新下载 mbox 文件（覆盖已有）
+    - 默认：历史月份复用本地文件；当月文件根据 mtime 间隔判断是否刷新
+    """
+    path = await download_mbox(year, month, force_refresh=force_refresh)
     # parse_mbox 是同步迭代器，放到默认 executor 中执行以避免阻塞事件循环
     messages = await asyncio.to_thread(list, list(parse_mbox(path)))
     inserted = await _store_emails(messages, path)
-    return {"path": str(path), "inserted": inserted, "total": len(messages)}
+    return {
+        "path": str(path),
+        "inserted": inserted,
+        "total": len(messages),
+        "force_refreshed": force_refresh,
+    }
+
+
+async def sync_current_month(*, force_refresh: bool = True) -> dict:
+    """同步当前月份（默认强制刷新，用于每日定时任务）。
+
+    当月 mbox 归档会持续追加新邮件，因此每日定时任务应强制刷新。
+    _store_emails 内部按 message_id 去重，重复邮件不会重复入库。
+    """
+    now = datetime.utcnow()
+    return await sync_year_month(now.year, now.month, force_refresh=force_refresh)
 
 
 async def update_reply_counts() -> int:

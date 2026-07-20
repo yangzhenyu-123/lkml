@@ -37,6 +37,12 @@ class SyncRequest(BaseModel):
         description="格式 YYYY-MM。不填则同步当前月。",
         pattern=r"^\d{4}-\d{2}$",
     )
+    force_refresh: bool = Field(
+        False,
+        description="是否强制重新下载覆盖已有 mbox 文件。"
+        "默认 False：历史月份复用本地，当月按 mtime 间隔判断；"
+        "True：强制重新下载（用于刷新脏数据）。",
+    )
 
 
 class SyncResponse(BaseModel):

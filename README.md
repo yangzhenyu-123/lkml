@@ -155,7 +155,104 @@ git clone --mirror https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linu
 > `CLONE_SHALLOW=1`（在 `.env` 或 `docker-compose.yml` 的 kernel-mirror 服务中设置）
 > 注意：浅克隆会丢失历史提交，无法用于历史 patch 追溯，仅适合"只需最新代码"场景。
 
-#### 3.2 预创建数据卷目录
+#### 3.2 预下载 LKML mbox 归档（强烈推荐，历史分析必备）
+
+LKML 邮件按月归档为 mbox 文件，托管在 `https://lore.kernel.org/linux-kernel/`，
+URL 格式：`https://lore.kernel.org/linux-kernel/{YYYY}-{MM}.mbox`（单月约 200-500MB）。
+容器启动后 backend 会按需下载，但批量历史分析建议提前下载目标年份。
+
+**方式 A：使用项目提供的批量下载脚本（推荐）**
+
+```bash
+# 下载 2023 全年
+./scripts/download-lkml-mbox.sh 2023
+
+# 下载 2020-2024 共 5 年（约 15-25GB）
+./scripts/download-lkml-mbox.sh 2020 2021 2022 2023 2024
+
+# 仅当年（默认行为）
+./scripts/download-lkml-mbox.sh
+
+# 自定义并发数与目录
+./scripts/download-lkml-mbox.sh 2023 --jobs 8 --dir /data/lkml-mbox
+
+# 查看完整帮助
+./scripts/download-lkml-mbox.sh --help
+```
+
+脚本特性：
+- 断点续传（wget -c / curl -C -），网络中断后重跑即可继续
+- 自动跳过未来月份（不存在的月份会 404，脚本捕获并跳过）
+- 当月文件默认删除重下（增量刷新），可用 `--skip-current` 跳过
+- 并行下载（默认 4 并发，`--jobs N` 调整）
+- 下载到 `./volumes/lkml-mbox/`（与 docker-compose 挂载路径一致）
+- 自动识别 HTML 错误页与空文件，避免污染数据
+
+**方式 B：手动 wget/curl 批量下载**
+
+```bash
+mkdir -p volumes/lkml-mbox && cd volumes/lkml-mbox
+
+# 下载 2023 全年
+for m in 01 02 03 04 05 06 07 08 09 10 11 12; do
+  wget -c "https://lore.kernel.org/linux-kernel/2023-${m}.mbox"
+done
+
+# 下载 2020-2024 共 5 年
+for y in 2020 2021 2022 2023 2024; do
+  for m in 01 02 03 04 05 06 07 08 09 10 11 12; do
+    wget -c "https://lore.kernel.org/linux-kernel/${y}-${m}.mbox"
+  done
+done
+```
+
+**文件大小参考**
+
+| 时间范围 | mbox 大小 | 邮件数（估） |
+|----------|-----------|-------------|
+| 单月 | 200-500 MB | 1-3 万封 |
+| 全年 | ~3-5 GB | 10-30 万封 |
+| 5 年（2020-2024） | ~15-25 GB | 50-150 万封 |
+
+**自动增量刷新机制（无需手动删除）**
+
+容器启动后，Celery beat 会自动维护 mbox 文件，无需人工干预：
+
+| 场景 | 行为 |
+|------|------|
+| 历史月份（已过去） | 本地已存在即复用，不重复下载（归档不再变化） |
+| 当月 | 每 6 小时自动强制刷新（00:00/06:00/12:00/18:00 UTC） |
+| 当月（API 手动触发） | 默认强制刷新，重复邮件按 message_id 去重 |
+| 任意月份 force_refresh=True | 强制重新下载覆盖（用于修复脏数据） |
+
+下载策略优化：
+- 「先写 `.part` 再原子 rename」，下载失败不会污染已有文件
+- 当月文件 1 小时内已刷新过则跳过（避免频繁请求）
+- `_store_emails` 按 `message_id` 去重，重复刷新不会产生重复记录
+
+**手动触发同步**
+
+```bash
+# 同步当月（默认强制刷新）
+curl -X POST http://localhost:18000/api/v1/lkml/sync \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{}'
+
+# 同步指定月份（默认复用本地，不强制刷新）
+curl -X POST http://localhost:18000/api/v1/lkml/sync \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{"year_month": "2024-06"}'
+
+# 强制重新下载指定月份（覆盖已有文件）
+curl -X POST http://localhost:18000/api/v1/lkml/sync \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{"year_month": "2024-06", "force_refresh": true}'
+```
+
+#### 3.3 预创建数据卷目录
 
 避免首次启动时 Docker 自动以 root 创建卷目录导致权限问题：
 
@@ -164,7 +261,7 @@ mkdir -p volumes/{kernel-mirror,lkml-mbox,outputs,opencode-config}
 chmod 777 volumes/*  # 容器内非 root 用户可读写
 ```
 
-#### 3.3 预置 OpenCode 技能仓库
+#### 3.4 预置 OpenCode 技能仓库
 
 `patent-disclosure-skill` 会在首次使用时由后端自动 clone 到
 `volumes/opencode-config/skills/`。也可预克隆加速：
@@ -176,7 +273,7 @@ git clone --depth 1 -b main \
     volumes/opencode-config/skills/patent-disclosure-skill
 ```
 
-#### 3.4 预拉取 Docker 镜像（可选）
+#### 3.5 预拉取 Docker 镜像（可选）
 
 ```bash
 docker pull postgres:16-alpine
@@ -301,8 +398,8 @@ SkillConfig:    name · git_url · local_path · branch · enabled
 
 | 任务 | Cron | 说明 |
 |---|---|---|
-| `daily-lkml-sync` | `0 3 * * *` | 每日 03:00 同步当月 + 上月 mbox |
-| `daily-digest` | `0 6 * * *` | 每日 06:00 生成昨日技术文章 + 触发订阅邮件 |
+| `lkml-sync-current` | `0 */6 * * *` | 每 6 小时（00:00/06:00/12:00/18:00 UTC）强制刷新当月 mbox，按 message_id 去重 |
+| `daily-digest` | `30 6 * * *` | 每日 06:30 生成当日技术文章 + 触发订阅邮件 |
 | `weekly-kernel-fetch` | `0 4 * * 0` | 每周日 04:00 fetch kernel 镜像最新提交 |
 
 ---

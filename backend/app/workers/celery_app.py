@@ -1,8 +1,9 @@
 """Celery 实例 + beat schedule。
 
 beat_schedule:
-- daily-lkml-sync: 每日 03:00 同步 LKML mbox
-- daily-digest:    每日 06:00 生成每日精选文章
+- lkml-sync-current: 每 6 小时同步当月 LKML mbox（00:00/06:00/12:00/18:00 UTC）
+                     当月归档持续追加新邮件，需高频刷新；按 message_id 去重，重复不入库
+- daily-digest:      每日 06:30 生成每日精选文章
 - weekly-kernel-fetch: 每周日 04:00 拉取 kernel 镜像
 """
 from __future__ import annotations
@@ -33,14 +34,18 @@ celery_app.conf.update(
 )
 
 celery_app.conf.beat_schedule = {
-    "daily-lkml-sync": {
+    # 每 6 小时同步当月 mbox（00:00/06:00/12:00/18:00 UTC）
+    # 当月归档会持续追加新邮件，需高频刷新；按 message_id 去重，重复邮件不会重复入库
+    "lkml-sync-current": {
         "task": "app.workers.tasks.sync_lkml_task",
-        "schedule": crontab(hour=3, minute=0),
+        "schedule": crontab(minute=0, hour="*/6"),
     },
+    # 每日 06:30 生成每日精选文章（在 06:00 同步完成后）
     "daily-digest": {
         "task": "app.workers.tasks.daily_digest_task",
-        "schedule": crontab(hour=6, minute=0),
+        "schedule": crontab(hour=6, minute=30),
     },
+    # 每周日 04:00 拉取 kernel 镜像
     "weekly-kernel-fetch": {
         "task": "app.workers.tasks.fetch_kernel_task",
         "schedule": crontab(hour=4, minute=0, day_of_week=0),

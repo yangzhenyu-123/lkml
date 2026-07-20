@@ -88,10 +88,19 @@ async def trigger_sync(
     payload: SyncRequest,
     _: User = Depends(require_analyst),
 ) -> SyncResponse:
-    """触发 LKML 同步任务（Celery）。"""
+    """触发 LKML 同步任务（Celery）。
+
+    - 不传 year_month：同步当前月（默认强制刷新）
+    - 传 year_month：同步指定月份（默认不强制刷新，已存在即复用）
+    - force_refresh=True：强制重新下载覆盖
+    """
     year_month = payload.year_month or datetime.utcnow().strftime("%Y-%m")
     try:
-        task = sync_lkml_task.delay(year_month)
+        # 不传 year_month 时默认 force_refresh=True（当月需要刷新）
+        if not payload.year_month:
+            task = sync_lkml_task.delay(None, force_refresh=True)
+        else:
+            task = sync_lkml_task.delay(year_month, force_refresh=payload.force_refresh)
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
