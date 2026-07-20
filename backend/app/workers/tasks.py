@@ -2,6 +2,9 @@
 
 注意：Celery worker 内同步函数中调用 async 服务时，使用 asyncio.run 包装。
 worker 与 API 共享同一份代码与配置。
+
+数据库会话工厂使用 NullPool（见 app/db/session.py），确保每次 asyncio.run
+创建新 loop 时不会复用绑定到旧 loop 的 asyncpg 连接。
 """
 from __future__ import annotations
 
@@ -13,15 +16,11 @@ from app.workers.celery_app import celery_app
 
 
 def _run(coro):
-    """在同步 Celery 任务中执行 async 函数。复用事件循环。"""
-    try:
-        loop = asyncio.get_event_loop()
-        if loop.is_running():
-            # 已有循环在跑（少见），用 ensure_future + run_until_complete 兜底
-            fut = asyncio.ensure_future(coro)
-            return loop.run_until_complete(fut)
-    except RuntimeError:
-        pass
+    """在同步 Celery 任务中执行 async 函数。
+
+    每次调用都创建新的 event loop（asyncio.run），配合 db.session 的 NullPool
+    避免跨 loop 复用 asyncpg 连接。
+    """
     return asyncio.run(coro)
 
 

@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import (
     async_sessionmaker,
     create_async_engine,
 )
+from sqlalchemy.pool import NullPool
 
 from app.core.config import settings
 
@@ -29,12 +30,19 @@ def _ensure_async_driver(url: str) -> str:
     return url
 
 
-# 显式关闭 statement cache 以避免 PostgreSQL 16 prepared statement 复用问题
+# 使用 NullPool 的原因：
+# Celery worker 采用 prefork 模式（fork 子进程执行任务），每个任务用
+# asyncio.run() 创建独立的 event loop。若使用默认连接池，asyncpg 连接
+# 会绑定到创建它的 loop，fork 后子进程复用池中连接时会报错：
+#   RuntimeError: Task ... got Future ... attached to a different loop
+# NullPool 每次都新建连接，不跨 loop 复用，彻底避免该问题。
+# asyncpg 自身连接建立很快，对 API 性能影响可忽略。
 engine = create_async_engine(
     _ensure_async_driver(settings.DATABASE_URL),
     echo=settings.DEBUG,
     pool_pre_ping=True,
     future=True,
+    poolclass=NullPool,
 )
 
 async_session_factory: async_sessionmaker[AsyncSession] = async_sessionmaker(

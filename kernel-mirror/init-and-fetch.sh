@@ -34,6 +34,8 @@ log() {
 # - http.postBuffer: 增大到 500MB，避免大包传输中断
 # - core.compression: 降低 CPU 压力，加速传输
 # - http.lowSpeedLimit / lowSpeedTime: 避免慢速连接被过早断开
+# - safe.directory: 宿主机预克隆的卷挂载到容器后 owner 不一致，
+#   git 默认拒绝操作（dubious ownership），需显式声明信任
 setup_git_config() {
   git config --global http.postBuffer 524288000
   git config --global core.compression 0
@@ -41,7 +43,10 @@ setup_git_config() {
   git config --global http.lowSpeedTime 300
   # 协议优化
   git config --global protocol.version 2
-  log "git 全局配置已设置（postBuffer=500MB, compression=0, protocol v2）"
+  # 信任挂载进来的镜像目录（owner 可能是宿主机用户，与容器 root 不一致）
+  git config --global --add safe.directory "${MIRROR_DIR}"
+  git config --global --add safe.directory '*'
+  log "git 全局配置已设置（postBuffer=500MB, compression=0, protocol v2, safe.directory=*）"
 }
 
 # ===== 克隆（mirror，带重试） =====
