@@ -30,7 +30,7 @@
 
 ## 2. 后端 API 契约（已实现）
 
-Base URL: `http://localhost:8000/api/v1`
+Base URL: `http://localhost:18000/api/v1`
 
 ### 认证
 - `POST /auth/login` → `{access_token, token_type}`
@@ -230,6 +230,6 @@ frontend/
 - 最近任务列表 + 最近文章列表
 
 ## 8. 部署
-- Docker Compose 一键起 frontend(8080) / backend(8000) / worker / beat / postgres / redis / kernel-mirror
+- Docker Compose 一键起 frontend(18088) / backend(18000) / worker / beat / postgres(35432) / redis(16379) / kernel-mirror
 - 前端构建：Vite build → nginx 静态服务 + 反代 /api 到 backend
 - 环境变量统一在 .env

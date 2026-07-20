@@ -2,7 +2,7 @@ import axios, { AxiosError, AxiosInstance } from "axios";
 import { message as antdMessage } from "antd";
 import { useAuthStore } from "@/store/authStore";
 
-const baseURL = (import.meta.env.VITE_API_BASE as string) || "http://localhost:8000";
+const baseURL = (import.meta.env.VITE_API_BASE as string) || "http://localhost:18000";
 
 export const apiClient: AxiosInstance = axios.create({
   baseURL: `${baseURL}/api/v1`,

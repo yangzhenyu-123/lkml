@@ -30,12 +30,12 @@ class Settings(BaseSettings):
 
     # ---------- 数据库 ----------
     DATABASE_URL: str = (
-        "postgresql+asyncpg://lkml:lkml_secret@localhost:5432/lkml_patent"
+        "postgresql+asyncpg://lkml:lkml_secret@localhost:35432/lkml_patent"
     )
 
     # ---------- Redis / Celery ----------
-    CELERY_BROKER_URL: str = "redis://localhost:6379/0"
-    CELERY_RESULT_BACKEND: str = "redis://localhost:6379/1"
+    CELERY_BROKER_URL: str = "redis://localhost:16379/0"
+    CELERY_RESULT_BACKEND: str = "redis://localhost:16379/1"
 
     # ---------- JWT ----------
     JWT_SECRET: str = "change_me_to_random_long_string"

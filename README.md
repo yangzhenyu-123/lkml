@@ -141,11 +141,13 @@ docker compose up -d
 ### 4. 访问
 | 服务 | 地址 | 说明 |
 |---|---|---|
-| 前端 | http://localhost:8080 | 主界面 |
-| 后端 API | http://localhost:8000 | FastAPI |
-| API 文档 | http://localhost:8000/docs | Swagger UI |
-| PostgreSQL | localhost:5432 | 元数据 |
-| Redis | localhost:6379 | broker |
+| 前端 | http://localhost:18088 | 主界面 |
+| 后端 API | http://localhost:18000 | FastAPI |
+| API 文档 | http://localhost:18000/docs | Swagger UI |
+| PostgreSQL | localhost:35432 | 元数据 |
+| Redis | localhost:16379 | broker |
+
+> 端口均选用不常用高位端口（35432/16379/18000/18088）以避免与本机其他服务冲突，容器内部仍使用标准端口。
 
 使用 `.env` 中配置的 `INIT_ADMIN_USERNAME` / `INIT_ADMIN_PASSWORD` 登录。
 
@@ -248,7 +250,7 @@ SkillConfig:    name · git_url · local_path · branch · enabled
 
 ## 🌐 API 概览
 
-Base URL: `http://localhost:8000/api/v1`
+Base URL: `http://localhost:18000/api/v1`
 
 | 模块 | 端点 |
 |---|---|
@@ -260,7 +262,7 @@ Base URL: `http://localhost:8000/api/v1`
 | 订阅 | `GET/POST/DELETE /subscriptions` · `GET /subscriptions/unsubscribe/{token}` |
 | 用户 | `GET/POST/PATCH/DELETE /users`（admin only） |
 
-完整 API 文档：http://localhost:8000/docs
+完整 API 文档：http://localhost:18000/docs
 
 ---
 
@@ -272,7 +274,7 @@ cd backend
 pip install -r requirements.txt
 # 启动 PostgreSQL + Redis（可用 docker compose up postgres redis）
 alembic upgrade head
-uvicorn app.main:app --reload --port 8000
+uvicorn app.main:app --reload --port 18000
 # 另一个终端启动 Celery
 celery -A app.workers.celery_app worker --loglevel=info
 celery -A app.workers.celery_app beat --loglevel=info
