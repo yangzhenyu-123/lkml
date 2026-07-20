@@ -1,7 +1,7 @@
 """聚合所有 v1 路由。"""
 from fastapi import APIRouter
 
-from app.api.v1 import auth, daily, history, lkml, opencode, subscriptions, users
+from app.api.v1 import auth, daily, history, lkml, opencode, stats, subscriptions, users
 
 api_router = APIRouter()
 api_router.include_router(auth.router, prefix="/auth", tags=["auth"])
@@ -13,3 +13,4 @@ api_router.include_router(opencode.router, prefix="/opencode", tags=["opencode"]
 api_router.include_router(
     subscriptions.router, prefix="/subscriptions", tags=["subscriptions"]
 )
+api_router.include_router(stats.router, prefix="/stats", tags=["stats"])

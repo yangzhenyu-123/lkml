@@ -8,7 +8,7 @@ import {
   ArrowRightOutlined,
 } from "@ant-design/icons";
 import { Link } from "react-router-dom";
-import { lkmlApi } from "@/api/lkml";
+import { statsApi } from "@/api/stats";
 import { historyApi } from "@/api/history";
 import { dailyApi } from "@/api/daily";
 import { stageMeta, jobStatusMap, fromNow } from "@/utils/format";
@@ -30,16 +30,17 @@ export default function Dashboard() {
   useEffect(() => {
     (async () => {
       try {
-        const [emails, jobs, articles] = await Promise.all([
-          lkmlApi.list({ limit: 1 }),
+        // 用专用 stats 接口获取计数（单次 DB 往返），避免 3 个 list 各做 COUNT(*)
+        const [s, jobs, articles] = await Promise.all([
+          statsApi.dashboard(),
           historyApi.list({ limit: 5 }),
           dailyApi.list({ limit: 5 }),
         ]);
         setStats({
-          emailCount: emails.total,
-          jobCount: jobs.total,
-          articleCount: articles.total,
-          retryPending: jobs.items.filter((j) => j.status === "failed").length,
+          emailCount: s.email_count,
+          jobCount: s.job_count,
+          articleCount: s.article_count,
+          retryPending: s.retry_pending,
         });
         setRecentJobs(jobs.items);
         setRecentArticles(articles.items);
