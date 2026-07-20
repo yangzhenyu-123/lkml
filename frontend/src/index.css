@@ -1,0 +1,151 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --color-ink-900: #0b1f3a;
+    --color-ink-800: #13294f;
+    --color-ink-700: #1e3a5f;
+    --color-ember-500: #ff6b35;
+    --color-paper: #f5f1e8;
+  }
+
+  html,
+  body,
+  #root {
+    height: 100%;
+    margin: 0;
+    padding: 0;
+  }
+
+  body {
+    font-family: "Inter", system-ui, -apple-system, sans-serif;
+    background-color: #f5f1e8;
+    color: #0b1f3a;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+  }
+
+  h1, h2, h3, h4, h5, h6 {
+    font-family: "Sora", system-ui, sans-serif;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    color: #0b1f3a;
+  }
+
+  code, pre, .mono {
+    font-family: "JetBrains Mono", ui-monospace, monospace;
+  }
+}
+
+@layer components {
+  /* 卡片基础样式 */
+  .lk-card {
+    @apply bg-white rounded-lg border border-ink-100 shadow-card transition-all duration-200;
+  }
+  .lk-card:hover {
+    @apply shadow-cardHover border-ink-200;
+  }
+
+  /* 侧栏导航项 */
+  .lk-nav-item {
+    @apply flex items-center gap-3 px-4 py-2.5 rounded-md text-sm font-medium transition-all duration-150 cursor-pointer;
+    color: rgba(238, 242, 248, 0.75);
+  }
+  .lk-nav-item:hover {
+    color: #ffffff;
+    background-color: rgba(255, 255, 255, 0.08);
+  }
+  .lk-nav-item.active {
+    color: #ffffff;
+    background-color: rgba(255, 107, 53, 0.15);
+    box-shadow: inset 3px 0 0 0 #ff6b35;
+  }
+
+  /* 状态徽章 */
+  .lk-status-badge {
+    @apply inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-xs font-medium;
+  }
+
+  /* 阶段卡片头部 */
+  .lk-stage-header {
+    @apply flex items-center justify-between px-4 py-3 border-b border-ink-100;
+  }
+}
+
+/* AntD 组件微调 */
+.ant-btn-primary {
+  background: #0b1f3a !important;
+  border-color: #0b1f3a !important;
+}
+.ant-btn-primary:hover {
+  background: #1e3a5f !important;
+  border-color: #1e3a5f !important;
+}
+.ant-btn-primary.lk-btn-ember {
+  background: #ff6b35 !important;
+  border-color: #ff6b35 !important;
+}
+.ant-btn-primary.lk-btn-ember:hover {
+  background: #e5532a !important;
+  border-color: #e5532a !important;
+}
+
+/* 滚动条美化 */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #c7d1e0;
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #8a9fc0;
+}
+
+/* Markdown 渲染样式 */
+.lk-markdown {
+  @apply text-ink-800 leading-relaxed;
+}
+.lk-markdown h1 { @apply text-2xl font-bold mt-6 mb-4 text-ink-900; }
+.lk-markdown h2 { @apply text-xl font-semibold mt-5 mb-3 text-ink-900 border-b border-ink-100 pb-2; }
+.lk-markdown h3 { @apply text-lg font-semibold mt-4 mb-2 text-ink-900; }
+.lk-markdown p { @apply my-3; }
+.lk-markdown ul { @apply list-disc pl-6 my-3; }
+.lk-markdown ol { @apply list-decimal pl-6 my-3; }
+.lk-markdown li { @apply my-1; }
+.lk-markdown code {
+  @apply bg-ink-50 text-ember-600 px-1.5 py-0.5 rounded text-sm font-mono;
+}
+.lk-markdown pre {
+  @apply bg-ink-900 text-ink-100 p-4 rounded-lg overflow-x-auto my-4 text-sm;
+}
+.lk-markdown pre code {
+  @apply bg-transparent text-ink-100 p-0;
+}
+.lk-markdown blockquote {
+  @apply border-l-4 border-ember-500 pl-4 italic text-ink-600 my-4;
+}
+.lk-markdown table {
+  @apply w-full border-collapse my-4;
+}
+.lk-markdown th, .lk-markdown td {
+  @apply border border-ink-100 px-3 py-2 text-left;
+}
+.lk-markdown th {
+  @apply bg-ink-50 font-semibold;
+}
+.lk-markdown a {
+  @apply text-ember-600 underline hover:text-ember-500;
+}
+
+/* 高亮代码 highlight.js 主题覆盖 */
+.hljs {
+  background: transparent !important;
+}

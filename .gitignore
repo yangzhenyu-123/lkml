@@ -1,0 +1,45 @@
+# 环境变量
+.env
+.env.local
+.env.*.local
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+venv/
+.venv/
+
+# 前端
+node_modules/
+dist/
+dist-ssr/
+*.local
+.vite/
+
+# 卷数据
+volumes/kernel-mirror/*
+!volumes/kernel-mirror/.gitkeep
+volumes/lkml-mbox/*
+!volumes/lkml-mbox/.gitkeep
+volumes/outputs/*
+!volumes/outputs/.gitkeep
+volumes/opencode-config/*
+!volumes/opencode-config/.gitkeep
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# 日志
+*.log
+logs/

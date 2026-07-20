@@ -1,0 +1,155 @@
+services:
+  # ============ 数据层 ============
+  postgres:
+    image: postgres:16-alpine
+    container_name: lkml_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-lkml_patent}
+      POSTGRES_USER: ${POSTGRES_USER:-lkml}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-lkml_secret}
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-lkml}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: lkml_redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  # ============ Kernel 镜像 ============
+  kernel-mirror:
+    build:
+      context: ./kernel-mirror
+      dockerfile: Dockerfile
+    container_name: lkml_kernel_mirror
+    restart: unless-stopped
+    environment:
+      KERNEL_REPO: ${KERNEL_REPO:-https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git}
+      FETCH_INTERVAL: ${KERNEL_FETCH_INTERVAL:-86400}
+    volumes:
+      - ./volumes/kernel-mirror:/git
+    entrypoint: ["/app/init-and-fetch.sh"]
+
+  # ============ 后端 API ============
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: lkml_backend
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/1
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-lkml}:${POSTGRES_PASSWORD:-lkml_secret}@postgres:5432/${POSTGRES_DB:-lkml_patent}
+      - KERNEL_MIRROR_PATH=/data/kernel-mirror
+      - LKML_MBOX_PATH=/data/lkml-mbox
+      - OUTPUTS_PATH=/data/outputs
+      - OPENCODE_CONFIG_PATH=/data/opencode-config
+    volumes:
+      - ./volumes/kernel-mirror:/data/kernel-mirror:ro
+      - ./volumes/lkml-mbox:/data/lkml-mbox
+      - ./volumes/outputs:/data/outputs
+      - ./volumes/opencode-config:/data/opencode-config
+      - ./backend:/app
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: >
+      sh -c "alembic upgrade head &&
+             uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 1"
+
+  # ============ Celery Worker ============
+  worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: lkml_worker
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/1
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-lkml}:${POSTGRES_PASSWORD:-lkml_secret}@postgres:5432/${POSTGRES_DB:-lkml_patent}
+      - KERNEL_MIRROR_PATH=/data/kernel-mirror
+      - LKML_MBOX_PATH=/data/lkml-mbox
+      - OUTPUTS_PATH=/data/outputs
+      - OPENCODE_CONFIG_PATH=/data/opencode-config
+    volumes:
+      - ./volumes/kernel-mirror:/data/kernel-mirror
+      - ./volumes/lkml-mbox:/data/lkml-mbox
+      - ./volumes/outputs:/data/outputs
+      - ./volumes/opencode-config:/data/opencode-config
+      - ./backend:/app
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: celery -A app.workers.celery_app worker --loglevel=info --concurrency=4
+
+  # ============ Celery Beat ============
+  beat:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: lkml_beat
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/1
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-lkml}:${POSTGRES_PASSWORD:-lkml_secret}@postgres:5432/${POSTGRES_DB:-lkml_patent}
+      - KERNEL_MIRROR_PATH=/data/kernel-mirror
+      - LKML_MBOX_PATH=/data/lkml-mbox
+      - OUTPUTS_PATH=/data/outputs
+      - OPENCODE_CONFIG_PATH=/data/opencode-config
+    volumes:
+      - ./volumes/kernel-mirror:/data/kernel-mirror
+      - ./volumes/lkml-mbox:/data/lkml-mbox
+      - ./volumes/outputs:/data/outputs
+      - ./volumes/opencode-config:/data/opencode-config
+      - ./backend:/app
+    depends_on:
+      redis:
+        condition: service_healthy
+    command: celery -A app.workers.celery_app beat --loglevel=info
+
+  # ============ 前端 ============
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_API_BASE: ${VITE_API_BASE:-http://localhost:8000}
+    container_name: lkml_frontend
+    restart: unless-stopped
+    ports:
+      - "8080:80"
+    depends_on:
+      - backend
+
+volumes:
+  pg_data:
+  redis_data:
