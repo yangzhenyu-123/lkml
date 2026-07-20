@@ -92,7 +92,7 @@
 | 层 | 技术 |
 |---|---|
 | 前端 | React 18 · Vite 6 · TypeScript 5 · Ant Design 5 · Tailwind CSS · Zustand · React Router 7 · React Markdown |
-| 后端 | FastAPI 0.115 · Python 3.11 · SQLAlchemy 2.0 (async) · Alembic · Pydantic v2 · python-jose (JWT) · passlib (bcrypt) · aiohttp |
+| 后端 | FastAPI 0.115 · Python 3.11 · SQLAlchemy 2.0 (async) · Alembic · Pydantic v2 · python-jose (JWT) · bcrypt · aiohttp |
 | 异步任务 | Celery 5.4 · Redis 7 (broker + result backend) · Celery Beat (定时调度) |
 | 数据存储 | PostgreSQL 16 · Redis 7 · 本地卷（kernel git 镜像 / lkml mbox / 产出物 / opencode 配置） |
 | 部署 | Docker Compose · Nginx（前端静态服务 + API 反代 + WebSocket 升级） |
@@ -128,7 +128,66 @@ OPENCODE_API_KEY=sk-your-actual-api-key
 OPENCODE_MODEL=gpt-4o
 ```
 
-### 3. 启动服务
+### 3. 本地预准备文件（可选，加速首次启动）
+
+容器启动后可直接使用以下预准备的本地文件，避免首次 clone / 下载耗时过长：
+
+#### 3.1 预下载 kernel git 镜像（强烈推荐，避免 5GB 仓库在线 clone 失败）
+
+`kernel-mirror` 容器启动时会 `git clone --mirror` Linux 仓库（约 5GB），国内网络
+极易因 SSL EOF / 超时失败。可提前在宿主机克隆完成后挂载到容器：
+
+```bash
+# 在宿主机执行（需 ~5GB 磁盘与稳定网络，建议挂代理或使用国内镜像源）
+mkdir -p volumes/kernel-mirror
+git clone --mirror https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git \
+    volumes/kernel-mirror/linux.git
+
+# 也可使用清华镜像加速：
+# git clone --mirror https://mirrors.tuna.tsinghua.edu.cn/git/linux.git \
+#     volumes/kernel-mirror/linux.git
+
+# 克隆完成后，docker-compose.yml 已配置挂载 ./volumes/kernel-mirror -> /git，
+# kernel-mirror 容器启动时会检测到已有镜像，直接进入增量 fetch 模式
+```
+
+> 若网络不稳定，可设置环境变量启用浅克隆（仅获取最新提交，~1GB）：
+> `CLONE_SHALLOW=1`（在 `.env` 或 `docker-compose.yml` 的 kernel-mirror 服务中设置）
+> 注意：浅克隆会丢失历史提交，无法用于历史 patch 追溯，仅适合"只需最新代码"场景。
+
+#### 3.2 预创建数据卷目录
+
+避免首次启动时 Docker 自动以 root 创建卷目录导致权限问题：
+
+```bash
+mkdir -p volumes/{kernel-mirror,lkml-mbox,outputs,opencode-config}
+chmod 777 volumes/*  # 容器内非 root 用户可读写
+```
+
+#### 3.3 预置 OpenCode 技能仓库
+
+`patent-disclosure-skill` 会在首次使用时由后端自动 clone 到
+`volumes/opencode-config/skills/`。也可预克隆加速：
+
+```bash
+mkdir -p volumes/opencode-config/skills
+git clone --depth 1 -b main \
+    https://github.com/handsomestWei/patent-disclosure-skill \
+    volumes/opencode-config/skills/patent-disclosure-skill
+```
+
+#### 3.4 预拉取 Docker 镜像（可选）
+
+```bash
+docker pull postgres:16-alpine
+docker pull redis:7-alpine
+docker pull python:3.11-slim
+docker pull node:20-alpine
+docker pull nginx:alpine
+docker pull alpine/git:latest
+```
+
+### 4. 启动服务
 ```bash
 docker compose up -d
 ```
@@ -138,7 +197,7 @@ docker compose up -d
 - `kernel-mirror` 容器开始克隆 Linux kernel 仓库（约 5GB，耗时较长）
 - `backend` 容器自动运行 Alembic 迁移并创建 admin 账号
 
-### 4. 访问
+### 5. 访问
 | 服务 | 地址 | 说明 |
 |---|---|---|
 | 前端 | http://localhost:18088 | 主界面 |

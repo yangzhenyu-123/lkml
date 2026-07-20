@@ -7,24 +7,37 @@ import json
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
+import bcrypt
 from cryptography.fernet import Fernet, InvalidToken
 from jose import JWTError, jwt
-from passlib.context import CryptContext
 
 from app.core.config import settings
 
 # ============ 密码哈希 ============
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+# 直接使用 bcrypt 库（而非 passlib），避免 passlib 1.7.4 与 bcrypt>=4.1 的
+# 不兼容问题（passlib 内部访问 bcrypt.__about__.__version__，该属性在新版被移除）。
+# bcrypt 规范要求密码长度 ≤ 72 字节，超出部分需主动截断，否则抛出
+# "password cannot be longer than 72 bytes"。
+_BCRYPT_MAX_BYTES = 72
+
+
+def _truncate_for_bcrypt(raw: str) -> bytes:
+    """将密码编码为 utf-8 后截断到 72 字节。"""
+    return raw.encode("utf-8", errors="ignore")[:_BCRYPT_MAX_BYTES]
 
 
 def hash_password(raw: str) -> str:
-    return pwd_context.hash(raw)
+    """生成 bcrypt 哈希（cost=12），返回 utf-8 字符串。"""
+    salt = bcrypt.gensalt(rounds=12)
+    hashed = bcrypt.hashpw(_truncate_for_bcrypt(raw), salt)
+    return hashed.decode("utf-8")
 
 
 def verify_password(raw: str, hashed: str) -> bool:
+    """校验密码与 bcrypt 哈希是否匹配。"""
     try:
-        return pwd_context.verify(raw, hashed)
-    except Exception:  # noqa: BLE001
+        return bcrypt.checkpw(_truncate_for_bcrypt(raw), hashed.encode("utf-8"))
+    except (ValueError, TypeError):
         return False
 
 

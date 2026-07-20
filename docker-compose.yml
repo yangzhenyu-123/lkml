@@ -43,6 +43,9 @@ services:
     environment:
       KERNEL_REPO: ${KERNEL_REPO:-https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git}
       FETCH_INTERVAL: ${KERNEL_FETCH_INTERVAL:-86400}
+      CLONE_MAX_RETRIES: ${CLONE_MAX_RETRIES:-3}
+      CLONE_RETRY_INTERVAL: ${CLONE_RETRY_INTERVAL:-60}
+      CLONE_SHALLOW: ${CLONE_SHALLOW:-0}
     volumes:
       - ./volumes/kernel-mirror:/git
     entrypoint: ["/app/init-and-fetch.sh"]
